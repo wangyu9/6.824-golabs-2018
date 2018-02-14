@@ -4,9 +4,11 @@ import (
 	"hash/fnv"
 	//
 	"os"
-	"io/ioutil"
+	//"io/ioutil"
 	"fmt"
 	"encoding/json"
+	//"log"
+	//"bytes"
 )
 
 
@@ -77,12 +79,27 @@ func doMap(
 	// https://stackoverflow.com/questions/36111777/golang-how-to-read-a-text-file
 	// With ReadFile
 	// There is no need to close the file according to https://forum.golangbridge.org/t/reading-a-text-file/3534
+	/*
 	file, err := ioutil.ReadFile( inFile)
 	if err != nil {
 		fmt.Println("Error: Openning file %s failed", inFile)
 	}
-
 	contents := string(file)
+	*/
+
+	file, err := os.Open(inFile)
+	if err != nil {
+		// log.Fatal(err)
+		fmt.Println("Error: Openning file %s failed", inFile)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+
+	raw := make([]byte, info.Size())
+	file.Read(raw)
+
+	contents := string(raw)
 
 	// The first argument should be the input file name, though the map function
 	// The second argument should be the entire input file contents.
