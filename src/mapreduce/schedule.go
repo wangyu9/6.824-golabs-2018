@@ -5,7 +5,7 @@ import (
 	//"time"
 	//
 	"sync"
-	"container/list"
+	//"container/list"
 )
 
 //
@@ -18,64 +18,8 @@ import (
 // existing registered workers (if any) and new ones as they register.
 //
 
-// wangyu added:
-type WorkerInfo struct {
-	RPC_addr string
-	has_done_work bool // whether the worker did some work or not.
-	is_busy bool
-	// the scheduler will give high priority to worker who has not done work and give them task first,
-	// since this is a requirement of the test.
-}
-
-type WorkersPool struct {
-	mu  sync.Mutex
-
-	workersList [] WorkerInfo
-	existsAvailableWorker *sync.Cond
-	// signals when new workers becomes available
-}
 
 
-func newWorkersPool() (* WorkersPool) {
-	nwp := new( WorkersPool)
-
-
-	return nwp
-}
-
-func newWorkerHost(workersPool *WorkersPool, registerChan chan string, scheduleDone chan bool) {
-
-	// this usage is insipred by forwardRegistrations in master.go
-
-	for {
-		// Use an external channel signal to stop a gorouitne:
-		// https://stackoverflow.com/questions/6807590/how-to-stop-a-goroutine
-		select {
-
-		case newWorkerAddr := <-registerChan:
-
-			newWorker := WorkerInfo{newWorkerAddr, false, false}
-
-			fmt.Println("Worker %s added", newWorkerAddr)
-
-			workersPool.mu.Lock()
-
-				workersPool.workersList = append( workersPool.workersList, newWorker)
-				workersPool.existsAvailableWorker = true
-
-			workersPool.mu.Unlock()
-
-		case <- scheduleDone:
-			break
-		}
-	}
-
-}
-
-
-func assignWorkerTask(workerAddr string) {
-
-}
 
 func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, registerChan chan string) {
 	var ntasks int
@@ -114,55 +58,57 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 	// tasksDone := make([]bool, ntasks)
 
-	tasksTodo := new(list.List)
-	tasksDone := new(list.List)
-
-	for i := 0; i < ntasks; i++ {
-		tasksTodo.PushBack(i)
-	}
-
-	workersPool := newWorkersPool() // new() returns pointer type
-
-	quit := make(chan bool) // the singal to stop
-
-
-	go newWorkerHost( workersPool, registerChan, quit)
-
 	// Assign task to workers as long as there is remaining tasks
 
+	var wg sync.WaitGroup
+	// https://golang.org/pkg/sync/#WaitGroup.Wait
+	wg.Add(ntasks)
 
+	for i := 0; i < ntasks; i++ {
 
+		go func (i int, wg *sync.WaitGroup) {
 
-	for tasksDone.Len() < ntasks {
+			// passing i to the func is really necessary!
 
-		workersPool.mu.Lock()
+			// this func is responsible for *completely* solve one task
+			// thanks to a clever use of channel according to the hint.
 
-		// If there is a (available) worker who has not done a task, choose that worker;
-		selected := -1
-		for i, _ := range workersPool.workersList {
-			if workersPool.workersList[i].has_done_work {
-				selected = i
-				break
-			}
-		}
-		// Otherwise choose an available worker.
-		if selected == -1 {
-			for i, _ := range workersPool.workersList {
-				if !workersPool.workersList[i].is_busy {
-					selected = i
-					break
-				}
-			}
-		}
-		if selected != -1 {
-			// found an available worker.
-			workersPool.workersList[selected].is_busy = true
-			go assignWorkerTask(workersPool.workersList[selected].RPC_addr)
-		} else {
-			// all workers are busy.
-		}
+			//for {
 
-		workersPool.mu.Unlock()
+				fmt.Println("Job: %s:%d is waiting for worker", jobName, i)
+
+				worker := <-registerChan
+
+				// func (wk *Worker) DoTask(arg *DoTaskArgs, _ *struct{}) error {
+				// wk.name, arg.Phase, arg.TaskNumber, arg.File, arg.NumOtherPhase)
+
+				// JobName    string
+				// File       string
+				// Phase      jobPhase
+				// TaskNumber int
+				// NumOtherPhase int
+
+				fmt.Println("Worker %s is serving job: %s:%d", worker, jobName, i)
+
+				arg := DoTaskArgs{jobName, mapFiles[i], phase, i, n_other}
+
+				// reply :=
+
+				fmt.Println("RPC call")
+
+				call(worker, "Worker.DoTask", &arg, new(struct{}))
+
+				//if ok {
+					registerChan <- worker
+					//break;
+				//}
+
+			//}
+
+			fmt.Println("Job %s finished", i)
+			wg.Done()
+
+		}(i, &wg)
 
 	}
 
@@ -171,11 +117,9 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	// The File element is only used by Map tasks, and is the name of the file to read;
 	// schedule() can find these file names in mapFiles.
 
-
+	wg.Wait()
 
 	// Make RPC to give task to worker
-
-	quit <- true // this makes sure newWorkerHost quits
 
 	// schedule() should wait until all tasks have completed, and then return.
 
