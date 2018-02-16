@@ -5,7 +5,6 @@ import (
 	//"time"
 	//
 	"sync"
-	//"container/list"
 )
 
 //
@@ -18,27 +17,6 @@ import (
 // existing registered workers (if any) and new ones as they register.
 //
 
-
-func newWorkerHost(workersPool chan string, registerChan chan string, scheduleDone chan bool) {
-
-	// this usage is inspired by forwardRegistrations in master.go
-
-	for {
-		// Use an external channel signal to stop a gorouitne:
-		// https://stackoverflow.com/questions/6807590/how-to-stop-a-goroutine
-		select {
-
-		case newWorker := <-registerChan:
-
-			workersPool <- newWorker
-
-		case <- scheduleDone:
-			fmt.Println("newWorkerHost exits.")
-			break
-		}
-	}
-
-}
 
 func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, registerChan chan string) {
 	var ntasks int
@@ -68,41 +46,31 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	// schedule() learns about the set of workers by reading its registerChan argument.
 
 
-	// Fetch workers from channel
-
 	// That channel yields a string for each worker, containing the worker's RPC address.
 	// Some workers may exist before schedule() is called, and some may start while schedule() is running;
 	// all will appear on registerChan.
 	// schedule() should use all the workers, including ones that appear after it starts.
 
-	// Assign task to workers as long as there is remaining tasks
+	// I am using registerChan as a pool of all workers.
+	// Sub goroutines fetch worker from the pool when it needs.
 
-	/*
-	the worksPool implementation does not work.
-	there is no need to create an additional channel other than registerChan, anyway
-	exitChan := make(chan bool)
-	workersPool := make(chan string)
-	go newWorkerHost(workersPool, registerChan, exitChan)
-	*/
 
-	var wg sync.WaitGroup
 	// https://golang.org/pkg/sync/#WaitGroup.Wait
+	var wg sync.WaitGroup
 	wg.Add(ntasks)
 
 	for i := 0; i < ntasks; i++ {
 
 		go func (i int, wg *sync.WaitGroup) {
-
-			// passing i to the func is really necessary!
+			// make a copy of i to the func is really necessary!
 
 			// this func is responsible for *completely* solve one task
 			// thanks to a clever use of channel according to the hint.
 
 			for {
 
-				fmt.Println("Job: %s:%d is waiting for worker", jobName, i)
+				// fmt.Println("Job: %s:%d is waiting for worker", jobName, i)
 
-				// worker := <-workersPool
 				worker := <-registerChan
 
 				// func (wk *Worker) DoTask(arg *DoTaskArgs, _ *struct{}) error {
@@ -114,11 +82,9 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 				// TaskNumber int
 				// NumOtherPhase int
 
-				fmt.Println("Worker %s is serving job: %s:%d", worker, jobName, i)
+				// fmt.Println("Worker %s is serving job: %s:%d", worker, jobName, i)
 
 				arg := DoTaskArgs{jobName, mapFiles[i], phase, i, n_other}
-
-				fmt.Println("RPC call")
 
 
 				// Use the call() function in mapreduce/common_rpc.go to send an RPC to a worker.
@@ -129,9 +95,13 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 				ok := call(worker, "Worker.DoTask", arg, nil)
 
 				if ok {
+					// a neat handling of worker failure.
+					// failed worker will never be used again.
 					go func (worker string) {
 						// must do this in a goroutine, or it will deadlock since the works are not removed from this channel
-						// workersPool <- worker
+						// until the schedule() is called the next time.
+						// I *think* the worker's value has to be actually *copied* to make sure it exists after the
+						// schedule() exists. though I did not test against it.
 						registerChan <- worker
 						}(worker)
 					break
@@ -139,36 +109,15 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 			}
 
-			fmt.Println("Job %s finished", i)
+			//fmt.Println("Job %s finished", i)
 			wg.Done()
 
-		}(i, &wg)
+		}(i, &wg) // it is important to copied the value of i.
 
 	}
-	
 
 	wg.Wait()
-
-	// fmt.Println("Exit wait group.")
-
-	/*
-	this workers pool implementation does not work.
-	close(workersPool)
-	for worker := range workersPool {
-		fmt.Printf("Forwarding worker %s.",worker)
-		go func (worker string) {
-			// again this has to be in a goroutine
-			registerChan <- worker
-		}(worker)
-	}
-	fmt.Println("Initilizd workers pool forwarding.")
-	exitChan <- true
-	*/
-
-	// Make RPC to give task to worker
-
 	// schedule() should wait until all tasks have completed, and then return.
-
 
 	//
 	fmt.Printf("Schedule: %v done\n", phase)

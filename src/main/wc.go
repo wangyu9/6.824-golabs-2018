@@ -45,7 +45,7 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 	for word, times := range counts {
 		result[i] = mapreduce.KeyValue{word, strconv.Itoa(times)}
 		i++
-		fmt.Println("Word:%s, count:%d",word, strconv.Itoa(times))
+		// fmt.Println("Word:%s, count:%d",word, strconv.Itoa(times))
 	}
 
 	return result
