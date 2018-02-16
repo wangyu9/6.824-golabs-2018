@@ -19,7 +19,26 @@ import (
 //
 
 
+func newWorkerHost(workersPool chan string, registerChan chan string, scheduleDone chan bool) {
 
+	// this usage is inspired by forwardRegistrations in master.go
+
+	for {
+		// Use an external channel signal to stop a gorouitne:
+		// https://stackoverflow.com/questions/6807590/how-to-stop-a-goroutine
+		select {
+
+		case newWorker := <-registerChan:
+
+			workersPool <- newWorker
+
+		case <- scheduleDone:
+			fmt.Println("newWorkerHost exits.")
+			break
+		}
+	}
+
+}
 
 func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, registerChan chan string) {
 	var ntasks int
@@ -56,9 +75,15 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	// all will appear on registerChan.
 	// schedule() should use all the workers, including ones that appear after it starts.
 
-	// tasksDone := make([]bool, ntasks)
-
 	// Assign task to workers as long as there is remaining tasks
+
+	/*
+	the worksPool implementation does not work.
+	there is no need to create an additional channel other than registerChan, anyway
+	exitChan := make(chan bool)
+	workersPool := make(chan string)
+	go newWorkerHost(workersPool, registerChan, exitChan)
+	*/
 
 	var wg sync.WaitGroup
 	// https://golang.org/pkg/sync/#WaitGroup.Wait
@@ -73,10 +98,11 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			// this func is responsible for *completely* solve one task
 			// thanks to a clever use of channel according to the hint.
 
-			//for {
+			for {
 
 				fmt.Println("Job: %s:%d is waiting for worker", jobName, i)
 
+				// worker := <-workersPool
 				worker := <-registerChan
 
 				// func (wk *Worker) DoTask(arg *DoTaskArgs, _ *struct{}) error {
@@ -92,18 +118,26 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 				arg := DoTaskArgs{jobName, mapFiles[i], phase, i, n_other}
 
-				// reply :=
-
 				fmt.Println("RPC call")
 
-				call(worker, "Worker.DoTask", &arg, new(struct{}))
 
-				//if ok {
-					registerChan <- worker
-					//break;
-				//}
+				// Use the call() function in mapreduce/common_rpc.go to send an RPC to a worker.
+				// The first argument is the the worker's address, as read from registerChan.
+				// The second argument should be "Worker.DoTask".
+				// The third argument should be the DoTaskArgs structure,
+				// and the last argument should be nil.
+				ok := call(worker, "Worker.DoTask", arg, nil)
 
-			//}
+				if ok {
+					go func (worker string) {
+						// must do this in a goroutine, or it will deadlock since the works are not removed from this channel
+						// workersPool <- worker
+						registerChan <- worker
+						}(worker)
+					break
+				}
+
+			}
 
 			fmt.Println("Job %s finished", i)
 			wg.Done()
@@ -111,13 +145,25 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		}(i, &wg)
 
 	}
-
-	// schedule() tells a worker to execute a task by sending a Worker.DoTask RPC to the worker.
-	// This RPC's arguments are defined by DoTaskArgs in mapreduce/common_rpc.go.
-	// The File element is only used by Map tasks, and is the name of the file to read;
-	// schedule() can find these file names in mapFiles.
+	
 
 	wg.Wait()
+
+	// fmt.Println("Exit wait group.")
+
+	/*
+	this workers pool implementation does not work.
+	close(workersPool)
+	for worker := range workersPool {
+		fmt.Printf("Forwarding worker %s.",worker)
+		go func (worker string) {
+			// again this has to be in a goroutine
+			registerChan <- worker
+		}(worker)
+	}
+	fmt.Println("Initilizd workers pool forwarding.")
+	exitChan <- true
+	*/
 
 	// Make RPC to give task to worker
 
