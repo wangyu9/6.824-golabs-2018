@@ -13,5 +13,6 @@ By issuing
 
 So now issuing
 `git pull alt master`
+(and doing git commit and push)
 
 Allows me to keep updated to git://g.csail.mit.edu/6.824-golabs-2018
