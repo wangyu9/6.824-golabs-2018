@@ -14,4 +14,4 @@ By issuing
 So now issuing
 `git pull alt master`
 
-Allows me to keep updated to git://g.csail.mit.edu/6.824-golabs-2018 
+Allows me to keep updated to git://g.csail.mit.edu/6.824-golabs-2018
