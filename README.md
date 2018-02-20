@@ -16,3 +16,7 @@ So now issuing
 (and doing git commit and push)
 
 Allows me to keep updated to git://g.csail.mit.edu/6.824-golabs-2018
+
+Do
+`git config credential.helper store `
+to save username and password.
