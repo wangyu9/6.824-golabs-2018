@@ -68,6 +68,19 @@ const (  // iota is reset to 0
 	SERVER_STATE_LEADER ServerState = iota  //  == 2
 )
 
+func (serverState *ServerState) toString() (string) {
+	switch *serverState {
+	case SERVER_STATE_FOLLOWER:
+		return "FOLLOWER"
+	case SERVER_STATE_CANDIDATE:
+		return "CANDIDATE"
+	case SERVER_STATE_LEADER:
+		return "LEADER"
+	default:
+		return "No such server state"
+	}
+}
+
 type ServerEvent int
 
 const (
@@ -106,6 +119,24 @@ func (state *ServerState) isInTheStateFor(event ServerEvent) (bool) {
 		return state.stateShouldBe(SERVER_STATE_LEADER)
 	default:
 		return false
+	}
+}
+
+
+func (event *ServerEvent) toString() (string) {
+	switch *event {
+	case EVENT_HEARTBEAT_TIMEOUT:
+		return "Event Follow Heartbeat Timeout"
+	case EVENT_ELECTION_TIMEOUT:
+		return "Event Candidate Election Timeout"
+	case EVENT_ELECTION_WIN:
+		return "Event Candidate Election Win"
+	case EVENT_DISCOVER_LEADER_OR_NEW_TERM:
+		return "Event Candidate Discover Leader or New Term"
+	case EVENT_DISCOVER_HIGHER_TERM_SERVER:
+		return "Event Leader Discover Higher Term Server"
+	default:
+		return "No such event"
 	}
 }
 
@@ -183,8 +214,6 @@ type Raft struct {
 	// This is used by Follower to check if the leader if still alive
 	timerHeartbeatMonitor time.Timer
 
-	// This is used by Candidate
-	timerElection time.Timer
 
 	// This is used by Leader
 
@@ -192,6 +221,7 @@ type Raft struct {
 
 	// Channels must be initialized with make(chan type, xxx)
 	// in Make() or it will not work!!
+	// this two channels are protected by locks, and does not need to be in a separate goroutine.
 	eventsChan chan ServerEvent
 	heartbeatsChan chan bool
 }
@@ -204,8 +234,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 
+	rf.mu.Lock()
 	term = rf.currentTerm
 	isleader = (rf.serverState==SERVER_STATE_LEADER)
+	rf.mu.Unlock()
 
 	return term, isleader
 }
@@ -279,7 +311,7 @@ type RequestVoteReply struct {
 	// All starts with *Upper* Letter!!!
 
 	//Results:
-	Term int // currentTerm, for candidate to update itself
+	Term int // currentTerm, for candidate to update itself, so this is the term of voteGrater, not candidate.
 	VoteGranted bool //true means candidate received vote
 }
 
@@ -288,6 +320,42 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		switch rf.serverState {
+		case SERVER_STATE_FOLLOWER:
+			// do nothing
+		case SERVER_STATE_CANDIDATE:
+			rf.eventsChan <- EVENT_DISCOVER_LEADER_OR_NEW_TERM
+		case SERVER_STATE_LEADER:
+			rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
+		}
+	}
+
+	if rf.votedFor != -1 {
+		// voted already
+		reply.VoteGranted = false
+		return
+	}
+
+	// Now it has not voted for anyone for current term.
+	reply.VoteGranted = true
+
+	rf.votedFor = args.CandidateID
+
+
 }
 
 // wangyu
@@ -325,30 +393,39 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
+	rf.mu.Lock()
+
 	if args.Term < rf.currentTerm {
 		// stale RPC
 		fmt.Println("Server ", rf.me," received stale RPC from the (stale) leader", args.LeaderID,".")
 		reply.Success = false
+		rf.mu.Unlock() // careful about the lock before return
 		return
 	}
 
+	// starting from here
+	// args.Term >= rf.currentTerm is true
+
 	// update current term from args.Term
 	if args.Term > rf.currentTerm {
-		rf.mu.Lock()
 		// whenever set currentTerm, clear voteFor
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
-		rf.mu.Unlock()
 
-		rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
+		if rf.serverState == SERVER_STATE_LEADER {
+			rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
+		}
 	}
+
+	// Put this last seems a good choice for me.
+	// do not need to have it within goroutine
+	rf.heartbeatsChan <- true
+	// fmt.Println("Double check rf.heartbeatsChan is picked.")
 
 	// fmt.Println("Server ", rf.me," received heartbeat msg from the leader.")
 
-	// do not need to have it within goroutine
-	rf.heartbeatsChan <- true
+	rf.mu.Unlock()
 
-	// fmt.Println("Double check rf.heartbeatsChan is picked.")
 }
 
 //
@@ -425,99 +502,90 @@ func (rf *Raft) Kill() {
 
 func (rf *Raft) stateFollowerToCandidate() {
 
-	rf.mu.Lock()
 	state := rf.serverState
-	rf.mu.Unlock()
 
 	if !state.stateShouldBe(SERVER_STATE_FOLLOWER){
 		return
 	}
 
-	rf.mu.Lock()
 	rf.serverState = SERVER_STATE_CANDIDATE
-	rf.mu.Unlock()
 
-	// TODO
-
-	rf.mu.Lock()
 	// whenever set currentTerm, clear voteFor
-	rf.currentTerm = rf.currentTerm
+	rf.currentTerm = rf.currentTerm + 1
 	rf.votedFor = -1
-	rf.mu.Unlock()
 
-	go rf.startElection()
+	termWhenInit := rf.currentTerm
+	rf.votedFor = rf.me
+	go rf.startElection(termWhenInit)
 }
 
 func (rf *Raft) stateCandidateToCandidate() {
 	// i.e. restart election
 
-	rf.mu.Lock()
 	state := rf.serverState
-	rf.mu.Unlock()
 
 	if !state.stateShouldBe(SERVER_STATE_CANDIDATE){
 		return
 	}
 
-	// This can be skipped since it does not change.
-	// rf.mu.Lock()
-	// rf.serverState = SERVER_STATE_CANDIDATE
-	// rf.mu.Unlock()
+	// It seems everything below should be same as
+	// stateFollowerToCandidate(), including incrementing
+	// the currentTerm
 
-	// TODO
+	rf.serverState = SERVER_STATE_CANDIDATE
 
-	go rf.startElection()
+	// whenever set currentTerm, clear voteFor
+	rf.currentTerm = rf.currentTerm + 1
+	rf.votedFor = -1
+
+	termWhenInit := rf.currentTerm
+	rf.votedFor = rf.me
+	go rf.startElection(termWhenInit)
 }
 
 func (rf *Raft) stateCandidateToLeader() {
 
-	rf.mu.Lock()
 	state := rf.serverState
-	rf.mu.Unlock()
 
 	if !state.stateShouldBe(SERVER_STATE_CANDIDATE){
 		return
 	}
 
-	rf.mu.Lock()
 	rf.serverState = SERVER_STATE_LEADER
-	rf.mu.Unlock()
 
 	// TODO
+
+	// No need to increment currentTerm, see e.g. Fig. 5.
 }
 
 func (rf *Raft) stateCandidateToFollower() {
 
-	rf.mu.Lock()
 	state := rf.serverState
-	rf.mu.Unlock()
 
 	if !state.stateShouldBe(SERVER_STATE_CANDIDATE){
 		return
 	}
 
-	rf.mu.Lock()
 	rf.serverState = SERVER_STATE_FOLLOWER
-	rf.mu.Unlock()
 
 	// TODO
+	// This is optional since heartbeat signal is also reset the timer anyway
+	rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
 }
 
 func (rf *Raft) stateLeaderToFollower() {
 
-	rf.mu.Lock()
 	state := rf.serverState
-	rf.mu.Unlock()
 
 	if !state.stateShouldBe(SERVER_STATE_LEADER){
 		return
 	}
 
-	rf.mu.Lock()
 	rf.serverState = SERVER_STATE_FOLLOWER
-	rf.mu.Unlock()
 
 	// TODO
+	// This is optional since heartbeat signal is also reset the timer anyway
+	rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
 }
 
 
@@ -534,9 +602,10 @@ func (rf *Raft) stateMachineLoop() {
 
 		event := <- rf.eventsChan
 
+		// TODO: assumed that when event is put in the eventsChan,
+		// rf.mu has been locked already. // TODO: check that
 
-
-		fmt.Println("stateMachineLoop(): event", event, "happens.")
+		fmt.Println("stateMachineLoop(): Server",rf.me,rf.serverState.toString(), event.toString(), "happens.")
 
 		switch event {
 		case EVENT_HEARTBEAT_TIMEOUT:
@@ -551,37 +620,6 @@ func (rf *Raft) stateMachineLoop() {
 			rf.stateLeaderToFollower()
 		}
 	}
-}
-
-func backendLoopFollower(rf *Raft) {
-	if rf.serverState == SERVER_STATE_FOLLOWER {
-		// This double check is necessary, due to possibility of package delay.
-
-
-		// If election timeout elapses without receiving AppendEntries
-		// RPC from current leader or granting vote to candidate:
-		// convert to candidate.
-	}
-}
-
-func mainLoopBackend(rf *Raft) {
-
-	fmt.Printf("Raft Server Backend #%d is online!\n", rf.me)
-
-	rf.mu.Lock()
-		state := rf.serverState
-	rf.mu.Unlock()
-
-	switch state {
-	case SERVER_STATE_FOLLOWER:
-		backendLoopFollower(rf)
-	case SERVER_STATE_CANDIDATE:
-		// If election timeout elapses: start new election.
-	case SERVER_STATE_LEADER:
-		// (heartbeat) to each server; repeat during idle periods to
-		// prevent election timeouts (§5.2)
-	}
-
 }
 
 /*
@@ -603,11 +641,10 @@ func (rf *Raft) initHeartbeatMonitor() {
 		for {
 			select {
 			case <- rf.heartbeatsChan:
+				// no need to add lock, since we only do rf.heartbeatsChan<-XXX within locks()
 				//fmt.Println("initHeartbeatMonitor(): Server ", rf.me, "recives heartbeat.")
 				rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
-				rf.mu.Lock()
 				state := rf.serverState
-				rf.mu.Unlock()
 				switch state {
 				case SERVER_STATE_FOLLOWER:
 				case SERVER_STATE_CANDIDATE:
@@ -618,10 +655,13 @@ func (rf *Raft) initHeartbeatMonitor() {
 
 			case <- rf.timerHeartbeatMonitor.C:
 
+				// this is a bit tricky, since the timeout can happen during or not during
+				// a lock period. In the former case, just wait unitl the lock is released.
+				// Postponing the heartbeat timeout is OK.
 				//fmt.Println("Maybe I am locked here!!!!!!!!!!")
 				rf.mu.Lock()
 				state := rf.serverState
-				rf.mu.Unlock()
+
 				switch state {
 				case SERVER_STATE_FOLLOWER:
 					// Do not need to have it in a goroutine
@@ -635,6 +675,8 @@ func (rf *Raft) initHeartbeatMonitor() {
 				case SERVER_STATE_LEADER:
 					// do nothing
 				}
+
+				rf.mu.Unlock()
 
 			}
 		}
@@ -653,6 +695,8 @@ func (rf *Raft) initHeartbeatSender(){
 					term := rf.currentTerm
 					state := rf.serverState
 					rf.mu.Unlock()
+
+					// no need to lock the following, since goroutines and RPCs incur delay anyway.
 
 					if state == SERVER_STATE_LEADER {
 						// Only leader sends heartbeat signal
@@ -689,35 +733,15 @@ func (rf *Raft) initHeartbeatSender(){
 	}
 }
 
-func (rf *Raft) initElectionMonitor() {
+func (rf *Raft) startElection(termWhenInit int) {
 
-	// TODO
-
-	go func(rf *Raft) {
-
-
-	}(rf)
-}
-
-func (rf *Raft) startElection() {
-	assertEqual(rf.serverState, SERVER_STATE_CANDIDATE, "")
-
-	rf.timerElection.Reset(ElectionTimeout*time.Millisecond)
-
-	go func(me int) {
-		<- rf.timerElection.C
-		fmt.Println("Election times out for server ",me,".")
-		rf.eventsChan <- EVENT_ELECTION_TIMEOUT
-	}(rf.me)
+	// should not use lock in this goroutine except protecting the state transition
+	// in the end. Though it seems ok to use lock, but there is no need.
 
 
-	rf.mu.Lock()
-	term := rf.currentTerm
 	n := len(rf.peers)
-	// state := rf.serverState
-	rf.mu.Unlock()
 
-	args := RequestVoteArgs{term, rf.me} // same for all
+	args := RequestVoteArgs{termWhenInit, rf.me} // same for all
 
 	onetimeVoteChan := make(chan bool, n)
 
@@ -729,6 +753,8 @@ func (rf *Raft) startElection() {
 				reply := RequestVoteReply{-1, false}
 
 				ok := peer.Call("Raft.RequestVote", &args, &reply)
+
+				fmt.Println("Server ", rf.me,"send RequestVote() RPC to server ", index," with result", reply.VoteGranted,".")
 
 				if ok {
 					if reply.VoteGranted {
@@ -745,39 +771,47 @@ func (rf *Raft) startElection() {
 	}
 
 	// Collect results
-	votesCount := 0
+	votesCountTrue := 1 // candidate always vote for itself.
+	votesCountFalse := 0
+	for {
+		select {
+		// When the election is stale, do nothing in all case.
 
-	for i:=0; i<n; i++ {
-		voteGrant := <-onetimeVoteChan
-		if voteGrant {
-			votesCount++
-		}
-		if 2*votesCount>n { // cannot use n/2 on the right
-			// wins the election.
-			// TODO: should also pass an identifier of this election
-			// note the term is insufficient as an identifier
-			// since one server use the same term for sequential elections.
-			rf.eventsChan <- EVENT_ELECTION_WIN
-			break
+		case voteGrant := <-onetimeVoteChan:
+				if voteGrant {
+					votesCountTrue++
+				} else {
+					votesCountFalse++
+				}
+				if 2*votesCountTrue>n { // cannot use n/2 on the right
+					// It wins an election, which however may be a *stale* election.
+					rf.mu.Lock()
+					if rf.currentTerm == termWhenInit {
+						rf.eventsChan <- EVENT_ELECTION_WIN
+					}
+					rf.mu.Unlock()
+					return
+				}
+				if 2*votesCountFalse>=n { //use >= here
+					rf.mu.Lock()
+					if rf.currentTerm == termWhenInit {
+						// Currently treating losing an election same as timeout
+						rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+					}
+					rf.mu.Unlock()
+					return
+				}
+		case <- time.After(ElectionTimeout*time.Millisecond):
+				rf.mu.Lock()
+				if rf.currentTerm == termWhenInit {
+					rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+				}
+				rf.mu.Unlock()
+				return
 		}
 
 	}
-	// TODO
 
-	// Lose the election or timeout.
-	rf.eventsChan <- EVENT_ELECTION_TIMEOUT
-
-	/*
-	// double check when election ends current term is still valid
-	rf.mu.Lock()
-	endTerm := rf.currentTerm
-	rf.mu.Unlock()
-
-	// TODO: there is an issue: what if the rf.currentTerm is modified in between.
-	if endTerm == term {
-		rf.eventsChan <- EVENT_ELECTION_WIN
-	}
-	*/
 }
 
 func (rf *Raft) initServerState(state ServerState) {
@@ -833,33 +867,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	if me == 0 {
 		//rf.initServerState(SERVER_STATE_LEADER)
-		rf.initServerState(SERVER_STATE_FOLLOWER)
+		//rf.initServerState(SERVER_STATE_FOLLOWER)
 	} else {
 		rf.initServerState(SERVER_STATE_FOLLOWER)
 	}
 
 	// TODO: check how to declare a timer without using it.
 	rf.timerHeartbeatMonitor = *time.NewTimer(100000000000)
-	rf.timerElection = *time.NewTimer(100000000000)
 	rf.timerHeartbeatMonitor.Stop()
-	rf.timerElection.Stop()
 
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
 
-	rf.initElectionMonitor()
 
 	go rf.stateMachineLoop()
-
-	go mainLoopBackend( rf)
-
-
 
 	// back to given code
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 
 	return rf
 }
