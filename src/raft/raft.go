@@ -20,10 +20,23 @@ package raft
 import "sync"
 import "labrpc"
 
+
 // import "bytes"
 // import "labgob"
 
 
+import (
+	"fmt"
+	"time"
+	"log"
+)
+
+
+// wangyu: some design parameters:
+
+const HeartbeatPeriod = 20
+const LeaderAliveTimeout = 100
+const ElectionTimeout = 100
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -42,6 +55,69 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+// wangyu:
+// https://stackoverflow.com/questions/14426366/what-is-an-idiomatic-way-of-representing-enums-in-go
+
+type ServerState int
+
+const (  // iota is reset to 0
+//	SERVER_STATE_BASE ServerState = iota
+	SERVER_STATE_FOLLOWER ServerState = iota  //  == 0
+	SERVER_STATE_CANDIDATE ServerState = iota  //  == 1
+	SERVER_STATE_LEADER ServerState = iota  //  == 2
+)
+
+type ServerEvent int
+
+const (
+	//
+	EVENT_HEARTBEAT_RECEIVED = iota
+
+	// Events for Follower
+	EVENT_LEADER_TIMEOUT ServerEvent = iota
+
+	// Events for Candidate
+	EVENT_ELECTION_TIMEOUT ServerEvent = iota
+	EVENT_ELECTION_WIN ServerEvent = iota
+	//EVENT_DISCOVER_LEADER_OR_NEW_TERM = iota
+
+	// Events for Leader
+	//EVENT_DISCOVER_HIGHER_TERM_SERVER =iota
+)
+
+func (serverState *ServerState) stateShouldBe(expectedState ServerState) (bool) {
+
+	return *serverState==expectedState
+}
+
+func (state *ServerState) isInTheStateFor(event ServerEvent) (bool) {
+	switch event {
+	case EVENT_HEARTBEAT_RECEIVED:
+		return state.stateShouldBe(SERVER_STATE_FOLLOWER) || state.stateShouldBe(SERVER_STATE_CANDIDATE)
+	case EVENT_ELECTION_TIMEOUT:
+		return state.stateShouldBe(SERVER_STATE_FOLLOWER)
+	case EVENT_ELECTION_WIN:
+		return state.stateShouldBe(SERVER_STATE_CANDIDATE)
+	case EVENT_LEADER_TIMEOUT:
+		return state.stateShouldBe(SERVER_STATE_CANDIDATE)
+	default:
+		return false
+	}
+}
+
+func assertEqual(a interface{}, b interface{}, message string) {
+	// https://gist.github.com/samalba/6059502
+	if a == b{
+		return
+	}
+
+	if len(message) == 0 {
+		message = fmt.Sprintf("Assert fails: %v != %v", a, b)
+	}
+	fmt.Println(message)
+	log.Fatal(message)
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -55,6 +131,60 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	serverState ServerState
+
+	// Persistent state on all servers:
+
+	currentTerm int // latest term server has seen
+		// (initialized to 0 on first boot, increases monotonically)
+
+	votedFor int // candidateId that received vote in current
+		// term (or null if none)
+
+	// TODO: implement log[]
+	//log[] //log entries; each entry contains command
+		//for state machine, and term when entry
+		//was received by leader (first index is 1)
+
+
+	// Volatile state on all servers:
+
+	commitIndex int // index of highest log entry known to be
+	//committed (initialized to 0, increases
+		//monotonically)
+
+	// TODO: implemented after log[] done
+	// lastApplied // index of highest log entry applied to state
+		//machine (initialized to 0, increases
+		// monotonically)
+
+
+	// Volatile state on leaders:
+	// (Reinitialized after election)
+	// TODO: implemented after log[] done
+	// nextIndex[] // for each server, index of the next log entry
+		// to send to that server (initialized to leader
+		// last log index + 1)
+
+	// TODO: implemented after log[] done
+	// matchIndex[] // for each server, index of highest log entry
+		// known to be replicated on server
+		// (initialized to 0, increases monotonically)
+
+
+	// All timers
+
+	// This is used by Follower to check if the leader if still alive
+	timerHeartbeatTimeout time.Timer
+
+	// This is used by Candidate
+	timerElection time.Timer
+
+	// This is used by Leader
+
+	// All Channels
+	eventsChan chan ServerEvent
+
 }
 
 // return currentTerm and whether this server
@@ -64,6 +194,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+
+	term = rf.currentTerm
+	isleader = (rf.serverState==SERVER_STATE_LEADER)
+
 	return term, isleader
 }
 
@@ -131,6 +265,34 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+}
+
+// wangyu
+
+type HeartbeatArgs struct {
+	// All starts with *Upper* Letter!!!
+
+	Term int
+}
+
+type HeartbeatReply struct {
+	// All starts with *Upper* Letter!!!
+
+	ReceivedAck bool
+}
+
+func (rf *Raft) HeartbeatReceiver (args *HeartbeatArgs, reply *HeartbeatReply) {
+
+	// TODO: update current term from
+	//args.Term
+
+	reply.ReceivedAck = true
+
+	fmt.Println("Server ", rf.me," received heartbeat msg from the leader.")
+
+	go func() {
+		rf.eventsChan <- EVENT_HEARTBEAT_RECEIVED
+	}()
 }
 
 //
@@ -202,6 +364,154 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
 
+
+// wangyu
+
+
+func (rf *Raft) mainLoop() {
+
+	// All the state transitions happen in this function.
+	// This implements the server state machine as shown in Fig. 4.
+
+	fmt.Println("Raft Server #", rf.me," is online (Server State: ", rf.serverState,")!")
+
+	for {
+
+		event := <- rf.eventsChan
+		switch event {
+		case EVENT_HEARTBEAT_RECEIVED:
+			if rf.serverState.isInTheStateFor(event){
+				rf.timerHeartbeatTimeout.Reset(LeaderAliveTimeout*time.Millisecond)
+			}
+		case EVENT_ELECTION_TIMEOUT:
+			if rf.serverState.isInTheStateFor(event){
+			}
+		case EVENT_ELECTION_WIN:
+			if rf.serverState.isInTheStateFor(event){
+
+			}
+		case EVENT_LEADER_TIMEOUT:
+			if rf.serverState.isInTheStateFor(event){
+				fmt.Println("LeaderAliveMonitor times out for server ",rf.me,". Converted to candidate server.")
+				rf.initServerState(SERVER_STATE_CANDIDATE)
+			}
+		}
+
+	}
+}
+
+func backendLoopFollower(rf *Raft) {
+	if rf.serverState == SERVER_STATE_FOLLOWER {
+		// This double check is necessary, due to possibility of package delay.
+
+
+		// If election timeout elapses without receiving AppendEntries
+		// RPC from current leader or granting vote to candidate:
+		// convert to candidate.
+	}
+}
+
+func mainLoopBackend(rf *Raft) {
+
+	fmt.Printf("Raft Server Backend #%d is online!\n", rf.me)
+
+	rf.mu.Lock()
+		state := rf.serverState
+	rf.mu.Unlock()
+
+	switch state {
+	case SERVER_STATE_FOLLOWER:
+		backendLoopFollower(rf)
+	case SERVER_STATE_CANDIDATE:
+		// If election timeout elapses: start new election.
+	case SERVER_STATE_LEADER:
+		// (heartbeat) to each server; repeat during idle periods to
+		// prevent election timeouts (§5.2)
+	}
+
+}
+
+func (rf *Raft) initLeaderAliveMonitor() {
+	// TODO: does time need to be protected by lock?
+	// I think no.
+
+	rf.timerHeartbeatTimeout.Reset( LeaderAliveTimeout*time.Millisecond)
+
+	go func() {
+		// reactor for leader timeout
+		<- rf.timerHeartbeatTimeout.C
+		rf.eventsChan <- EVENT_LEADER_TIMEOUT
+		fmt.Println("LeaderAliveMonitor times out for server ",rf.me,".")
+	}()
+}
+
+func (rf *Raft) initHeartbeatSender(){
+
+	for i,p := range rf.peers {
+		if i!= rf.me {
+			go func(peer *labrpc.ClientEnd, index int) {
+
+				for {
+					rf.mu.Lock()
+					term := rf.currentTerm
+					state := rf.serverState
+					rf.mu.Unlock()
+
+					if state != SERVER_STATE_LEADER {
+						break
+					}
+
+					args := HeartbeatArgs{term}
+					reply := HeartbeatReply{false}
+					peer.Call("Raft.HeartbeatReceiver", &args, &reply)
+					if reply.ReceivedAck {
+						//fmt.Println("Server ", rf.me, "successfully sends heartbeat msg to server ",index,".")
+					}
+					time.Sleep(HeartbeatPeriod*time.Millisecond)
+				}
+			}(p,i) // i must be sent in.
+		}
+	}
+}
+
+func (rf *Raft) startElection() {
+	assertEqual(rf.serverState, SERVER_STATE_CANDIDATE, "")
+
+	rf.timerElection.Reset(ElectionTimeout*time.Millisecond)
+
+	go func(me int) {
+		<- rf.timerElection.C
+		fmt.Println("Election times out for server ",me,".")
+		go func() {
+			rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+		}()
+	}(rf.me)
+
+	//rf.mu.Lock()
+	//rf.mu.Unlock()
+
+}
+
+func (rf *Raft) initServerState(state ServerState) {
+	rf.mu.Lock()
+
+	rf.serverState = state
+
+	rf.mu.Unlock()
+
+	switch state {
+	case SERVER_STATE_FOLLOWER:
+		//rf
+	case SERVER_STATE_CANDIDATE:
+		// If election timeout elapses: start new election.
+	case SERVER_STATE_LEADER:
+		// (heartbeat) to each server; repeat during idle periods to
+		// prevent election timeouts (§5.2)
+
+		rf.initHeartbeatSender()
+	}
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -222,8 +532,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 
+	if me == 0 {
+		rf.initServerState(SERVER_STATE_LEADER)
+	} else {
+		rf.initServerState(SERVER_STATE_FOLLOWER)
+	}
+
+	go rf.mainLoop()
+
+	go mainLoopBackend( rf)
+
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	rf.readPersist(persister.ReadRaftState())// given code
 
 
 	return rf
