@@ -445,7 +445,7 @@ func (rf *Raft) stateFollowerToCandidate() {
 	rf.votedFor = -1
 	rf.mu.Unlock()
 
-	rf.startElection()
+	go rf.startElection()
 }
 
 func (rf *Raft) stateCandidateToCandidate() {
@@ -466,7 +466,7 @@ func (rf *Raft) stateCandidateToCandidate() {
 
 	// TODO
 
-	rf.startElection()
+	go rf.startElection()
 }
 
 func (rf *Raft) stateCandidateToLeader() {
@@ -533,6 +533,8 @@ func (rf *Raft) stateMachineLoop() {
 		// fmt.Println("stateMachineLoop(): waiting for events.", &rf.eventsChan)
 
 		event := <- rf.eventsChan
+
+
 
 		fmt.Println("stateMachineLoop(): event", event, "happens.")
 
@@ -711,11 +713,15 @@ func (rf *Raft) startElection() {
 
 	rf.mu.Lock()
 	term := rf.currentTerm
+	n := len(rf.peers)
 	// state := rf.serverState
 	rf.mu.Unlock()
 
 	args := RequestVoteArgs{term, rf.me} // same for all
 
+	onetimeVoteChan := make(chan bool, n)
+
+	// Broadcast vote requests.
 	for i,p := range rf.peers {
 		if i != rf.me {
 			go func(peer *labrpc.ClientEnd, index int) {
@@ -726,16 +732,52 @@ func (rf *Raft) startElection() {
 
 				if ok {
 					if reply.VoteGranted {
-
+						onetimeVoteChan <- true
+					} else {
+						onetimeVoteChan <- false
 					}
 				} else {
-
+					onetimeVoteChan <- false
 				}
-
+				// onetimeVoteChan is assigned last so no additional layer of goroutine is needed.
 			}(p, i)
 		}
 	}
+
+	// Collect results
+	votesCount := 0
+
+	for i:=0; i<n; i++ {
+		voteGrant := <-onetimeVoteChan
+		if voteGrant {
+			votesCount++
+		}
+		if 2*votesCount>n { // cannot use n/2 on the right
+			// wins the election.
+			// TODO: should also pass an identifier of this election
+			// note the term is insufficient as an identifier
+			// since one server use the same term for sequential elections.
+			rf.eventsChan <- EVENT_ELECTION_WIN
+			break
+		}
+
+	}
 	// TODO
+
+	// Lose the election or timeout.
+	rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+
+	/*
+	// double check when election ends current term is still valid
+	rf.mu.Lock()
+	endTerm := rf.currentTerm
+	rf.mu.Unlock()
+
+	// TODO: there is an issue: what if the rf.currentTerm is modified in between.
+	if endTerm == term {
+		rf.eventsChan <- EVENT_ELECTION_WIN
+	}
+	*/
 }
 
 func (rf *Raft) initServerState(state ServerState) {
