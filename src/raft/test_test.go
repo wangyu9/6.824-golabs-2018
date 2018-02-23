@@ -28,9 +28,6 @@ const RaftElectionTimeout = 1000 * time.Millisecond
 func TestAdditionalMulti2A(t *testing.T) {
 	for i:=0; i<*numOfTries; i++ {
 		TestInitialElection2A(t)
-	}
-
-	for i:=0; i<*numOfTries; i++ {
 		TestReElection2A(t)
 	}
 }

@@ -941,7 +941,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.initHeartbeatMonitor()
 
 
-	go rf.stateMachineLoop()
+	// go rf.stateMachineLoop()
 
 	// back to given code
 
