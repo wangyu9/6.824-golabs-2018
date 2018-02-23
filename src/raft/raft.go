@@ -35,9 +35,9 @@ import (
 // wangyu: some design parameters:
 // TODO: The tester requires that the leader send heartbeat RPCs no more than ten times per second.
 // I found it on piazza, where does this requirement come from?
-const HeartbeatSendPeriod = 100
-const HeartbeatTimeout = 300
-const ElectionTimeout = 300
+const HeartbeatSendPeriod = 50
+const HeartbeatTimeout = 200
+const ElectionTimeout = 200
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -212,7 +212,7 @@ type Raft struct {
 	// All timers
 
 	// This is used by Follower to check if the leader if still alive
-	timerHeartbeatMonitor time.Timer
+	// timerHeartbeatMonitor time.Timer
 
 
 	// This is used by Leader
@@ -222,8 +222,13 @@ type Raft struct {
 	// Channels must be initialized with make(chan type, xxx)
 	// in Make() or it will not work!!
 	// this two channels are protected by locks, and does not need to be in a separate goroutine.
-	eventsChan chan ServerEvent
+
 	heartbeatsChan chan bool
+
+	// I have got rid of the use of eventsChan, and use
+	// program call instead. My eventsChan was a misuse of
+	// channel and it will suffer from the data race problem.
+	// eventsChan chan ServerEvent
 }
 
 // return currentTerm and whether this server
@@ -338,9 +343,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		case SERVER_STATE_FOLLOWER:
 			// do nothing
 		case SERVER_STATE_CANDIDATE:
-			rf.eventsChan <- EVENT_DISCOVER_LEADER_OR_NEW_TERM
+			//rf.eventsChan <- EVENT_DISCOVER_LEADER_OR_NEW_TERM
+			rf.stateCandidateToFollower()
 		case SERVER_STATE_LEADER:
-			rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
+			//rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
+			rf.stateLeaderToFollower()
 		}
 	}
 
@@ -399,6 +406,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		// stale RPC
 		fmt.Println("Server ", rf.me," received stale RPC from the (stale) leader", args.LeaderID,".")
 		reply.Success = false
+
 		rf.mu.Unlock() // careful about the lock before return
 		return
 	}
@@ -413,13 +421,29 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		rf.votedFor = -1
 
 		if rf.serverState == SERVER_STATE_LEADER {
-			rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
+			//rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
+			rf.stateLeaderToFollower()
 		}
+	}
+
+
+	// no need to add lock, since we only do rf.heartbeatsChan<-XXX within locks()
+	//fmt.Println("initHeartbeatMonitor(): Server ", rf.me, "receives heartbeat.")
+	// rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
+	state := rf.serverState
+	switch state {
+	case SERVER_STATE_FOLLOWER:
+	case SERVER_STATE_CANDIDATE:
+		//rf.eventsChan <- EVENT_DISCOVER_LEADER_OR_NEW_TERM
+		rf.stateCandidateToFollower()
+	case SERVER_STATE_LEADER:
+		// do nothing
 	}
 
 	// Put this last seems a good choice for me.
 	// do not need to have it within goroutine
 	rf.heartbeatsChan <- true
+	// whenever this channel is sent, the heartbeats channel will be reset.
 	// fmt.Println("Double check rf.heartbeatsChan is picked.")
 
 	// fmt.Println("Server ", rf.me," received heartbeat msg from the leader.")
@@ -570,7 +594,7 @@ func (rf *Raft) stateCandidateToFollower() {
 
 	// TODO
 	// This is optional since heartbeat signal is also reset the timer anyway
-	rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
+	// rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
 }
 
 func (rf *Raft) stateLeaderToFollower() {
@@ -585,7 +609,7 @@ func (rf *Raft) stateLeaderToFollower() {
 
 	// TODO
 	// This is optional since heartbeat signal is also reset the timer anyway
-	rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
+	// rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
 }
 
 
@@ -595,7 +619,7 @@ func (rf *Raft) stateMachineLoop() {
 	// This implements the server state machine as shown in Fig. 4.
 
 	fmt.Println("Raft Server #", rf.me," is online (Server State: ", rf.serverState,")!")
-
+/*
 	for {
 
 		// fmt.Println("stateMachineLoop(): waiting for events.", &rf.eventsChan)
@@ -604,6 +628,11 @@ func (rf *Raft) stateMachineLoop() {
 
 		// TODO: assumed that when event is put in the eventsChan,
 		// rf.mu has been locked already. // TODO: check that
+
+		fmt.Println("stateMachineLoop(): lock status", rf.mu)
+		//rf.mu.Unlock()
+		//rf.mu.Lock()
+
 
 		fmt.Println("stateMachineLoop(): Server",rf.me,rf.serverState.toString(), event.toString(), "happens.")
 
@@ -620,6 +649,7 @@ func (rf *Raft) stateMachineLoop() {
 			rf.stateLeaderToFollower()
 		}
 	}
+*/
 }
 
 /*
@@ -632,7 +662,7 @@ case SERVER_STATE_LEADER:
 
 func (rf *Raft) initHeartbeatMonitor() {
 
-	rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
+	// rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
 
 	go func(rf *Raft) {
 
@@ -641,22 +671,13 @@ func (rf *Raft) initHeartbeatMonitor() {
 		for {
 			select {
 			case <- rf.heartbeatsChan:
-				// no need to add lock, since we only do rf.heartbeatsChan<-XXX within locks()
-				//fmt.Println("initHeartbeatMonitor(): Server ", rf.me, "recives heartbeat.")
-				rf.timerHeartbeatMonitor.Reset( HeartbeatTimeout*time.Millisecond)
-				state := rf.serverState
-				switch state {
-				case SERVER_STATE_FOLLOWER:
-				case SERVER_STATE_CANDIDATE:
-					rf.eventsChan <- EVENT_DISCOVER_LEADER_OR_NEW_TERM
-				case SERVER_STATE_LEADER:
-					// do nothing
-				}
 
-			case <- rf.timerHeartbeatMonitor.C:
+
+			case <- time.After( HeartbeatTimeout*time.Millisecond):
+			// case <- rf.timerHeartbeatMonitor.C:
 
 				// this is a bit tricky, since the timeout can happen during or not during
-				// a lock period. In the former case, just wait unitl the lock is released.
+				// a lock period. In the former case, just wait until the lock is released.
 				// Postponing the heartbeat timeout is OK.
 				//fmt.Println("Maybe I am locked here!!!!!!!!!!")
 				rf.mu.Lock()
@@ -664,12 +685,12 @@ func (rf *Raft) initHeartbeatMonitor() {
 
 				switch state {
 				case SERVER_STATE_FOLLOWER:
-					// Do not need to have it in a goroutine
-					//go func() {
+					// Cannot have it in a goroutine
 						//fmt.Println("See if I ever got here.", &rf.eventsChan)
-						rf.eventsChan <- EVENT_HEARTBEAT_TIMEOUT
-						fmt.Println("HeartbeatMonitor times out for server ",rf.me,".")
-					//}()
+					fmt.Println("HeartbeatMonitor times out for server ",rf.me,".")
+					// rf.eventsChan <- EVENT_HEARTBEAT_TIMEOUT
+					rf.stateFollowerToCandidate()
+					fmt.Println("HeartbeatMonitor times out for server double check ",rf.me,".")
 				case SERVER_STATE_CANDIDATE:
 					// do nothing, since already became candidate.
 				case SERVER_STATE_LEADER:
@@ -691,6 +712,7 @@ func (rf *Raft) initHeartbeatSender(){
 			go func(peer *labrpc.ClientEnd, index int) {
 
 				for {
+
 					rf.mu.Lock()
 					term := rf.currentTerm
 					state := rf.serverState
@@ -787,7 +809,8 @@ func (rf *Raft) startElection(termWhenInit int) {
 					// It wins an election, which however may be a *stale* election.
 					rf.mu.Lock()
 					if rf.currentTerm == termWhenInit {
-						rf.eventsChan <- EVENT_ELECTION_WIN
+						//rf.eventsChan <- EVENT_ELECTION_WIN
+						rf.stateCandidateToLeader()
 					}
 					rf.mu.Unlock()
 					return
@@ -796,7 +819,8 @@ func (rf *Raft) startElection(termWhenInit int) {
 					rf.mu.Lock()
 					if rf.currentTerm == termWhenInit {
 						// Currently treating losing an election same as timeout
-						rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+						//rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+						rf.stateCandidateToCandidate()
 					}
 					rf.mu.Unlock()
 					return
@@ -804,7 +828,8 @@ func (rf *Raft) startElection(termWhenInit int) {
 		case <- time.After(ElectionTimeout*time.Millisecond):
 				rf.mu.Lock()
 				if rf.currentTerm == termWhenInit {
-					rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+					//rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+					rf.stateCandidateToCandidate()
 				}
 				rf.mu.Unlock()
 				return
@@ -862,7 +887,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// rf.commitIndex // 2B
 
 
-	rf.eventsChan = make( chan ServerEvent, 200)
+	// rf.eventsChan = make( chan ServerEvent, 200)
 	rf.heartbeatsChan = make( chan bool, 200)
 
 	if me == 0 {
@@ -873,8 +898,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 	// TODO: check how to declare a timer without using it.
-	rf.timerHeartbeatMonitor = *time.NewTimer(100000000000)
-	rf.timerHeartbeatMonitor.Stop()
+	//rf.timerHeartbeatMonitor = *time.NewTimer(100000000000)
+	//rf.timerHeartbeatMonitor.Stop()
 
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
