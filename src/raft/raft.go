@@ -833,6 +833,12 @@ func (rf *Raft) startElection(termWhenInit int) {
 		}
 	}
 
+	electionTimeoutChan := make(chan bool)
+	go func() {
+		time.Sleep( randTimeBetween(ElectionTimeoutLower, ElectionTimeoutUpper) )
+		electionTimeoutChan <- true
+	}()
+
 	// Collect results
 	votesCountTrue := 1 // candidate always vote for itself.
 	votesCountFalse := 0
@@ -866,7 +872,7 @@ func (rf *Raft) startElection(termWhenInit int) {
 					rf.mu.Unlock()
 					return
 				}
-		case <- time.After( randTimeBetween(ElectionTimeoutLower, ElectionTimeoutUpper) ):
+		case <- electionTimeoutChan:
 				rf.mu.Lock()
 				if rf.currentTerm == termWhenInit {
 					//rf.eventsChan <- EVENT_ELECTION_TIMEOUT
