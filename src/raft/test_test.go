@@ -24,7 +24,7 @@ var numOfTries = flag.Int("k", 10, "number of repeated trials")
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 // usage:
-// go test -run 2A -k=100 -race
+// go test -run 2A -k=100 -race -timeout 90m
 func TestAdditionalMulti2A(t *testing.T) {
 	for i:=0; i<*numOfTries; i++ {
 		TestInitialElection2A(t)
