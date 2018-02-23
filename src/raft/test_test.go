@@ -15,9 +15,25 @@ import "math/rand"
 import "sync/atomic"
 import "sync"
 
+import "flag"
+// https://siongui.github.io/2017/04/28/command-line-argument-in-golang-test/
+var numOfTries = flag.Int("k", 10, "number of repeated trials")
+
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
+
+// usage:
+// go test -run 2A -k=100 -race
+func TestAdditionalMulti2A(t *testing.T) {
+	for i:=0; i<*numOfTries; i++ {
+		TestInitialElection2A(t)
+	}
+
+	for i:=0; i<*numOfTries; i++ {
+		TestReElection2A(t)
+	}
+}
 
 func TestInitialElection2A(t *testing.T) {
 	servers := 3
