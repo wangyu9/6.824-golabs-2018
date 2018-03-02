@@ -47,6 +47,8 @@ const ElectionTimeoutUpper = 400
 
 const verbose = 0
 
+const enable_lab_2b = true
+
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	return time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
 }
@@ -168,6 +170,14 @@ func assertEqual(a interface{}, b interface{}, message string) {
 	log.Fatal(message)
 }
 
+// used if enable_lab_2b:
+type LogEntry struct {
+	// upper case for potential used by RPC call
+	// LogIndex int
+	LogTerm int
+	Command interface{}
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -193,11 +203,15 @@ type Raft struct {
 	votedFor int // candidateId that received vote in current
 		// term (or null if none)
 
+
+	// used if enable_lab_2b:
+
+	baseIndex int // the displacement of index, when snapshot it used.
+
 	// TODO: implement log[]
-	//log[] //log entries; each entry contains command
+	log [] LogEntry//log entries; each entry contains command
 		//for state machine, and term when entry
 		//was received by leader (first index is 1)
-
 
 	// Volatile state on all servers:
 
@@ -205,21 +219,18 @@ type Raft struct {
 	//committed (initialized to 0, increases
 		//monotonically)
 
-	// TODO: implemented after log[] done
-	// lastApplied // index of highest log entry applied to state
+	lastApplied int// index of highest log entry applied to state
 		//machine (initialized to 0, increases
 		// monotonically)
 
 
 	// Volatile state on leaders:
-	// (Reinitialized after election)
-	// TODO: implemented after log[] done
-	// nextIndex[] // for each server, index of the next log entry
+	// TODO: (Reinitialized after election)
+	nextIndex [] int// for each server, index of the next log entry
 		// to send to that server (initialized to leader
 		// last log index + 1)
 
-	// TODO: implemented after log[] done
-	// matchIndex[] // for each server, index of highest log entry
+	matchIndex[] int // for each server, index of highest log entry
 		// known to be replicated on server
 		// (initialized to 0, increases monotonically)
 
@@ -244,6 +255,13 @@ type Raft struct {
 	// program call instead. My eventsChan was a misuse of
 	// channel and it will suffer from the data race problem.
 	// eventsChan chan ServerEvent
+
+	// used if enable_lab_2b:
+	applyChan chan ApplyMsg
+
+	peerBeingAppend [] sync.Mutex
+ 	// cannot have more than one tryAppendEntriesRecursively running at the same time
+
 }
 
 // return currentTerm and whether this server
@@ -317,8 +335,10 @@ type RequestVoteArgs struct {
 	//Arguments:
 	Term int //candidate’s term
 	CandidateID int //candidate requesting vote
-	// LastLogIndex //index of candidate’s last log entry (§5.4)
-	// LastLogTerm //term of candidate’s last log entry (§5.4)
+
+	// used if enable_lab_2b
+	LastLogIndex int//index of candidate’s last log entry (§5.4)
+	LastLogTerm int//term of candidate’s last log entry (§5.4)
 }
 
 //
@@ -335,11 +355,50 @@ type RequestVoteReply struct {
 	VoteGranted bool //true means candidate received vote
 }
 
+func (rf *Raft) getLogDisp(index int) (int) {
+	// this can be -1 since index may be
+	return index-rf.baseIndex
+}
+
+// TODO: it is possible that snapshoted log is no longer in rf.log, fix this in lab 3b
+func (rf *Raft) getLogTerm(index int) (int) {
+	if index == -1 {
+		return -1
+	} else {
+		return rf.log[rf.getLogDisp(index)].LogTerm
+	}
+}
+
+func (rf *Raft) getLastLogTerm() (int) {
+	if len(rf.log)>0 {
+		return rf.log[len(rf.log)-1].LogTerm
+	} else { // no log entry
+		return -1
+	}
+}
+
+func (rf *Raft) getLastLogIndex() (int) {
+	// it can return -1 when no log entry and rf.baseIndex
+	return len(rf.log)-1+rf.baseIndex
+}
+
+func (rf *Raft) existLogIndex(index int) (bool) {
+	return index <= rf.getLastLogIndex()
+}
+
+func (rf *Raft) deleteLogSince(index int) () {
+	// delete the log whose index is index, and the ones after it.
+	rf.log = rf.log[0:(rf.getLogDisp(index))]
+}
+
+
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+	// Receiver implementation:
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -347,6 +406,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm {
+		// 1. Reply false if term < currentTerm (§5.1)
 		reply.VoteGranted = false
 		return
 	}
@@ -366,17 +426,36 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 
-	if rf.votedFor != -1 {
+	// 2. If votedFor is null or candidateId, and candidate’s log is at
+	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+	if rf.votedFor != -1 && rf.votedFor!=args.CandidateID {
 		// voted already
 		reply.VoteGranted = false
 		return
+	}
+	if enable_lab_2b {
+		// Raft determines which of two logs is more up-to-date
+		// by comparing the index and term of the last entries in the
+		// logs. If the logs have last entries with different terms, then
+		// the log with the later term is more up-to-date. If the logs
+		// end with the same term, then whichever log is longer is
+		// more up-to-date.
+		// Note: LastLogTerm instead of args.Term / rf.currentTerm should be used here!
+		myLastLogTerm := rf.getLastLogTerm()
+		myLastLogIndex := rf.getLastLogIndex()
+		// it does not matter if any term/index are -1
+		candidate_log_more_or_equal_update_to_date :=
+			args.LastLogTerm > myLastLogTerm || (args.LastLogTerm==myLastLogTerm && args.LastLogIndex>=myLastLogIndex)
+		if !candidate_log_more_or_equal_update_to_date {
+			reply.VoteGranted = false
+			return
+		}
 	}
 
 	// Now it has not voted for anyone for current term.
 	reply.VoteGranted = true
 
 	rf.votedFor = args.CandidateID
-
 
 }
 
@@ -395,12 +474,13 @@ type AppendEntriesArgs struct {
 
 	LeaderID int//so follower can redirect clients
 
-	//PrevLogIndex //index of log entry immediately preceding
+	// used if enable_lab_2b
+	PrevLogIndex int//index of log entry immediately preceding
 	//new ones
-	//PrevLogTerm //term of prevLogIndex entry
-	//Entries[] //log entries to store (empty for heartbeat;
+	PrevLogTerm int//term of prevLogIndex entry
+	Entries[] LogEntry//log entries to store (empty for heartbeat;
 	//may send more than one for efficiency)
-	//leaderCommit leader’s commitIndex
+	LeaderCommit int //leader’s commitIndex
 }
 
 type AppendEntriesReply struct {
@@ -408,15 +488,28 @@ type AppendEntriesReply struct {
 
 	// Results:
 	Term int//currentTerm, for leader to update itself
-	Success bool//true if follower contained entry matching
-	// prevLogIndex and prevLogTerm
+	Success bool//true if follower contained entry matching prevLogIndex and prevLogTerm
+	//
 
+	// If Success==false, return the additional information
+
+
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.mu.Lock()
 
+	reply.Success = false
+
+	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		// stale RPC
 		if verbose >= 1 {
@@ -429,6 +522,8 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 	// starting from here
 	// args.Term >= rf.currentTerm is true
+
+	// TODO: consider replace it with a checkTermNoLessThan
 
 	// update current term from args.Term
 	if args.Term > rf.currentTerm {
@@ -455,6 +550,74 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 	case SERVER_STATE_LEADER:
 		// do nothing
 	}
+
+	if enable_lab_2b {
+		if len(args.Entries)>0 {
+			// not a heartbeat entry
+
+			// TODO: think about if always args.PrevLogIndex>=0
+			if args.PrevLogIndex > rf.getLastLogIndex() || rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {
+			//if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].LogTerm!=args.PrevLogTerm {
+				// 2. Reply false if log doesn’t contain an entry at prevLogIndex
+				// whose term matches prevLogTerm (§5.3)
+				reply.Success = false
+			} else {
+				reply.Success = true
+				// so it will not trigger a retreat to recursively appendentries at the leader side
+
+				// 3. If an existing entry conflicts with a new one (same index
+				// but different terms), delete the existing entry and all that
+				// follow it (§5.3)
+
+				for i := 0; i < len(args.Entries); i++ {
+					if (rf.existLogIndex(args.PrevLogIndex+1+i)) {
+					//if (args.PrevLogIndex+1+i) < len(rf.log) { // if there is an existing entry there
+						if rf.getLogTerm(args.PrevLogIndex+1+i) != args.Entries[i].LogTerm {
+						//if rf.log[args.PrevLogIndex+1+i].LogTerm != args.Entries[i].LogTerm { // if conflicts
+							rf.deleteLogSince(args.PrevLogIndex+1+i)
+							// rf.log = rf.log[0:(args.PrevLogIndex+1+i)] // so rf.log[args.PrevLogIndex+1+i] and the one after it is deleted
+							rf.log = append(rf.log, args.Entries[i])
+						} else {
+							// no need to append
+							// TODO: double check the command are same
+
+							// if there is an existing entry there (same index and same term), the existing entry must be
+							// identical to the one in Entries, as guaranteed by the Leader Append-only Property and that
+							// one term has at most one leader.
+						}
+					} else {
+						rf.log = append(rf.log, args.Entries[i])
+					}
+				}
+
+				/* an alternative way to implement, I decided not to go with it and did not check it very carefully.
+				TODO: remote it later
+
+				// if there is an existing entry there (same index and same term), the existing entry must be
+				// identical to the one in Entries, as guranteed by the Leader Append-only Property and that
+				// one term has at most one leader. This actually should never happen if the .
+				// but it does not hurt to delete and reappend
+				// I think so, double check
+
+				rf.log = rf.log[0:(args.PrevLogIndex+1)] // so rf.log[args.PrevLogIndex] is kept in the log.
+
+				// 4. Append any new entries not already in the log
+
+				for i := 0; i < len(args.Entries); i++ {
+					rf.log = append(rf.log, args.Entries[i])
+				}
+				*/
+			}
+		}
+
+		// 5. If leaderCommit > commitIndex, set commitIndex =
+		// 	min(leaderCommit, index of last new entry)
+		if args.LeaderCommit > rf.commitIndex {
+			rf.commitIndex = min(args.LeaderCommit, rf.getLastLogIndex()) // index of last new entry
+			// TODO: send newly committed entries to the applyCh
+		}
+	}
+
 
 	// Put this last seems a good choice for me.
 	// do not need to have it within goroutine
@@ -523,8 +686,170 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
+	if enable_lab_2b {
+		rf.mu.Lock()
+
+		isLeader = (rf.serverState == SERVER_STATE_LEADER)
+
+		if isLeader {
+
+			index = rf.getLastLogIndex()+1
+			term = rf.currentTerm
+
+			entry := LogEntry{rf.currentTerm,command}
+			rf.log = append(rf.log, entry)
+
+			// Notify all other servers.
+			for i,_ := range rf.peers {
+				if i!= rf.me {
+					go rf.trySendAppendEntriesRecursively(i, rf.currentTerm)// i is sent in.
+				}
+			}
+		}
+
+
+		rf.mu.Unlock()
+	}
 
 	return index, term, isLeader
+}
+
+
+// used if enable_lab_2b
+func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted int){
+
+	rf.peerBeingAppend[serverIndex].Lock()
+	// make sure at most one tryAppendEntriesRecursively running for the serverIndex-th server
+
+	entries := make([] LogEntry, 1)
+
+	for {
+
+		rf.mu.Lock()
+
+		term := rf.currentTerm
+		state := rf.serverState
+		prevLogIndex := rf.nextIndex[serverIndex]-1
+		prevLogTerm := -1
+		if prevLogIndex >= 0 {
+			prevLogTerm = rf.log[prevLogIndex].LogTerm
+		}
+		leaderCommit := rf.commitIndex
+
+		// entries are in reverse index order!
+		entries = append( entries, rf.log[prevLogIndex+1])
+
+		rf.mu.Unlock()
+
+		if term == termWhenStarted && state == SERVER_STATE_LEADER {
+
+			// TODO: decode entries in reverse order
+			// TODO: optimize to avoid sending entries before serverIndex converges
+
+			args := AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, entries, leaderCommit}
+
+			reply := AppendEntriesReply{}
+
+			ok := rf.peers[serverIndex].Call("Raft.AppendEntries", &args, &reply)
+
+			if ok {
+				if reply.Success {
+					fmt.Println("Leader succeeded to append an entry to server",serverIndex,".")
+					rf.mu.Lock()
+					rf.nextIndex[serverIndex] += len(entries)
+					rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
+					rf.mu.Unlock()
+
+					// TODO: try to commit entries if possible
+
+					break
+				} else {
+					/* TODO: This is probably optional, add it later.
+
+
+					termNoLessThan := true
+					rf.mu.Lock()
+					// TODO: consider make this a checkTermNoLessThan fun
+					if rf.currentTerm < reply.Term {
+						termNoLessThan = false
+						rf.currentTerm = reply.Term
+						rf.votedFor = -1
+						switch rf.serverState {
+						case SERVER_STATE_FOLLOWER:
+						case SERVER_STATE_CANDIDATE:
+							rf.stateCandidateToFollower()
+						case SERVER_STATE_LEADER:
+							rf.stateLeaderToFollower()
+						}
+					}
+					rf.mu.Unlock()
+					if !termNoLessThan {
+						break
+					}
+
+					*/
+
+					// Retreat
+					rf.mu.Lock()
+
+					if rf.currentTerm == termWhenStarted && rf.serverState == SERVER_STATE_LEADER {
+						rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
+						// TODO: decrease more than 1 as suggested in the lecture
+					}
+
+					rf.mu.Unlock()
+				}
+
+
+			}
+
+		} else{
+			// This goroutine is already out-of-date.
+			break
+		}
+
+	}
+
+
+	rf.peerBeingAppend[serverIndex].Unlock()
+
+	fmt.Println("Exit tryAppendEntriesRecursively()")
+
+}
+
+
+// peers is copied by values (hopefully that is what happens)
+func broadcastAppendEntries(peers []labrpc.ClientEnd, me int, args AppendEntriesArgs){
+
+	for i,p := range peers {
+		if i!= me {
+			go func(peer *labrpc.ClientEnd, index int) {
+
+				reply := AppendEntriesReply{}
+				// non default values like {-1, false} leads to
+				// labgob warning: Decoding into a non-default variable/field Term may not work
+				// https://piazza.com/class/j9xqo2fm55k1cy?cid=75
+
+				//fmt.Println("Server ", rf.me, "tries to send heartbeat msg to server ",index,".")
+
+				ok := peer.Call("Raft.AppendEntries", &args, &reply)
+
+				if ok {
+					if verbose >= 2 {
+						fmt.Println("Server ", me, "successfully sends heartbeat msg to server ", index, ".")
+					}
+					if reply.Success {
+						// not really need to use the reply value
+					}
+				} else {
+					if verbose >= 2 {
+						fmt.Println("Server ", me, "fails to send heartbeat msg to server ", index, ".")
+					}
+				}
+
+			}(&p,i) // i must be sent in.
+		}
+	}
 }
 
 //
@@ -604,6 +929,21 @@ func (rf *Raft) stateCandidateToLeader() {
 	rf.serverState = SERVER_STATE_LEADER
 
 	// No need to increment currentTerm, see e.g. Fig. 5.
+
+	if enable_lab_2b {
+		// (Re-)Initialize the indices
+
+		rf.nextIndex = make([]int, len(rf.peers))
+		rf.matchIndex = make([]int, len(rf.peers))
+
+		for i,_ := range rf.peers {
+			// Initialized to the leader's last log index + 1 = len(rf.log)-1 + 1 = len(rf.log)
+			rf.nextIndex[i] = len(rf.log)
+
+			rf.matchIndex[i] = 0
+		}
+
+	}
 }
 
 func (rf *Raft) stateCandidateToFollower() {
@@ -748,6 +1088,10 @@ func (rf *Raft) initHeartbeatSender(){
 					rf.mu.Lock()
 					term := rf.currentTerm
 					state := rf.serverState
+					// TODO: for heartbeat try not to use these on the receiver side.
+					prevLogIndex := rf.getLastLogIndex()//
+					prevLogTerm := rf.getLastLogTerm()
+					leaderCommit := rf.commitIndex
 					rf.mu.Unlock()
 
 					// no need to lock the following, since goroutines and RPCs incur delay anyway.
@@ -755,7 +1099,8 @@ func (rf *Raft) initHeartbeatSender(){
 					if state == SERVER_STATE_LEADER {
 						// Only leader sends heartbeat signal
 
-						args := AppendEntriesArgs{term, rf.me}
+						// args := AppendEntriesArgs{term, rf.me}
+						args := AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, make([]LogEntry, 0), leaderCommit}
 
 						// Put this in a go routine, which is optional.
 						// So the delay in RPC is also considered as part of the network delay
@@ -777,6 +1122,7 @@ func (rf *Raft) initHeartbeatSender(){
 								}
 								if reply.Success {
 									// not really need to use the reply value
+									// TODO optional: check reply.Term
 								}
 							} else {
 								if verbose >= 2 {
@@ -800,10 +1146,23 @@ func (rf *Raft) startElection(termWhenInit int) {
 	// should not use lock in this goroutine except protecting the state transition
 	// in the end. Though it seems ok to use lock, but there is no need.
 
+	// TODO: think about when disabled lab 2b
+	lastLogIndex := 0
+	lastLogTerm := 0
+
+	if enable_lab_2b {
+		rf.mu.Lock()
+
+		lastLogIndex = rf.getLastLogIndex()
+		lastLogTerm = rf.getLastLogTerm()
+
+		rf.mu.Unlock()
+	}
+
 
 	n := len(rf.peers)
 
-	args := RequestVoteArgs{termWhenInit, rf.me} // same for all
+	args := RequestVoteArgs{termWhenInit, rf.me, lastLogIndex, lastLogTerm} // same for all
 
 	onetimeVoteChan := make(chan bool, n)
 
@@ -934,6 +1293,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// rf.eventsChan = make( chan ServerEvent, 200)
 	rf.heartbeatsChan = make( chan bool, 200)
+
+	if enable_lab_2b {
+		rf.applyChan = make( chan ApplyMsg, 200)
+		rf.peerBeingAppend = make( [] sync.Mutex, len(rf.peers))
+		rf.baseIndex = 0
+	}
+
 
 	if me == 0 {
 		//rf.initServerState(SERVER_STATE_LEADER)

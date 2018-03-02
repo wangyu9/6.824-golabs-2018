@@ -25,12 +25,15 @@ const RaftElectionTimeout = 1000 * time.Millisecond
 
 // usage:
 // go test -run 2A -k=100 -race -timeout 90m
+/*
+Since I update the code base before 2b, this test no longer works .
 func TestAdditionalMulti2A(t *testing.T) {
 	for i:=0; i<*numOfTries; i++ {
 		TestInitialElection2A(t)
 		TestReElection2A(t)
 	}
 }
+*/
 
 func TestInitialElection2A(t *testing.T) {
 	servers := 3
