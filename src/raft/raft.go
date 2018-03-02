@@ -257,7 +257,8 @@ type Raft struct {
 	// eventsChan chan ServerEvent
 
 	// used if enable_lab_2b:
-	applyChan chan ApplyMsg
+	applyChan chan ApplyMsg // used by every server
+	commitCheckerTriggerChan chan bool // used by leader, send a signal to it whenever any matchIndex is updated.
 
 	peerBeingAppend [] sync.Mutex
  	// cannot have more than one tryAppendEntriesRecursively running at the same time
@@ -367,6 +368,10 @@ func (rf *Raft) getLogTerm(index int) (int) {
 	} else {
 		return rf.log[rf.getLogDisp(index)].LogTerm
 	}
+}
+
+func (rf *Raft) getLog(index int) (LogEntry) {
+	return rf.log[rf.getLogDisp(index)]
 }
 
 func (rf *Raft) getLastLogTerm() (int) {
@@ -503,6 +508,13 @@ func min(a, b int) int {
 	return b
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.mu.Lock()
@@ -557,7 +569,6 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 			// TODO: think about if always args.PrevLogIndex>=0
 			if args.PrevLogIndex > rf.getLastLogIndex() || rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {
-			//if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].LogTerm!=args.PrevLogTerm {
 				// 2. Reply false if log doesn’t contain an entry at prevLogIndex
 				// whose term matches prevLogTerm (§5.3)
 				reply.Success = false
@@ -568,14 +579,13 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				// 3. If an existing entry conflicts with a new one (same index
 				// but different terms), delete the existing entry and all that
 				// follow it (§5.3)
-
-				for i := 0; i < len(args.Entries); i++ {
-					if (rf.existLogIndex(args.PrevLogIndex+1+i)) {
-					//if (args.PrevLogIndex+1+i) < len(rf.log) { // if there is an existing entry there
-						if rf.getLogTerm(args.PrevLogIndex+1+i) != args.Entries[i].LogTerm {
-						//if rf.log[args.PrevLogIndex+1+i].LogTerm != args.Entries[i].LogTerm { // if conflicts
+				// 4. Append any new entries not already in the log
+				// Entries are in reverse order
+				n := len(args.Entries)
+				for i := 0; i < n; i++ {
+					if (rf.existLogIndex(args.PrevLogIndex+1+i)) { // if there is an existing entry there
+						if rf.getLogTerm(args.PrevLogIndex+1+i) != args.Entries[i].LogTerm {// if conflicts
 							rf.deleteLogSince(args.PrevLogIndex+1+i)
-							// rf.log = rf.log[0:(args.PrevLogIndex+1+i)] // so rf.log[args.PrevLogIndex+1+i] and the one after it is deleted
 							rf.log = append(rf.log, args.Entries[i])
 						} else {
 							// no need to append
@@ -589,32 +599,37 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						rf.log = append(rf.log, args.Entries[i])
 					}
 				}
-
-				/* an alternative way to implement, I decided not to go with it and did not check it very carefully.
-				TODO: remote it later
-
-				// if there is an existing entry there (same index and same term), the existing entry must be
-				// identical to the one in Entries, as guranteed by the Leader Append-only Property and that
-				// one term has at most one leader. This actually should never happen if the .
-				// but it does not hurt to delete and reappend
-				// I think so, double check
-
-				rf.log = rf.log[0:(args.PrevLogIndex+1)] // so rf.log[args.PrevLogIndex] is kept in the log.
-
-				// 4. Append any new entries not already in the log
-
-				for i := 0; i < len(args.Entries); i++ {
-					rf.log = append(rf.log, args.Entries[i])
-				}
-				*/
 			}
 		}
 
 		// 5. If leaderCommit > commitIndex, set commitIndex =
 		// 	min(leaderCommit, index of last new entry)
 		if args.LeaderCommit > rf.commitIndex {
+
+			oldCommitIndex := rf.commitIndex
+
 			rf.commitIndex = min(args.LeaderCommit, rf.getLastLogIndex()) // index of last new entry
-			// TODO: send newly committed entries to the applyCh
+
+			// Send newly committed entries to the applyCh
+
+			msgs := make([]ApplyMsg, 0)
+
+
+
+			for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
+				msgs = append(msgs, ApplyMsg{true, rf.getLog(i).Command, i})
+				fmt.Println("Server",rf.me, "commited entry [",i, "].")
+			}
+
+			go func(msgs []ApplyMsg) {
+				//  order is perserved
+				for i:=0; i<len(msgs); i++ {
+					if msgs[i].CommandIndex!=0 {
+						// the log with index 0 is a place holder and do not need to be applied
+						rf.applyChan <- msgs[i]
+					}
+				}
+			}(msgs)
 		}
 	}
 
@@ -699,6 +714,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			entry := LogEntry{rf.currentTerm,command}
 			rf.log = append(rf.log, entry)
 
+			fmt.Println("Start(): rf.log size is:",len(rf.log))
+
 			// Notify all other servers.
 			for i,_ := range rf.peers {
 				if i!= rf.me {
@@ -721,55 +738,64 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	rf.peerBeingAppend[serverIndex].Lock()
 	// make sure at most one tryAppendEntriesRecursively running for the serverIndex-th server
 
-	entries := make([] LogEntry, 1)
+	entries := make( [] LogEntry, 0)
+
+	// Lock is used in a rather unique way:
+	// everything is protected except the RPC call.
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 
 	for {
 
-		rf.mu.Lock()
+		if rf.currentTerm == termWhenStarted && rf.serverState == SERVER_STATE_LEADER {
 
-		term := rf.currentTerm
-		state := rf.serverState
-		prevLogIndex := rf.nextIndex[serverIndex]-1
-		prevLogTerm := -1
-		if prevLogIndex >= 0 {
-			prevLogTerm = rf.log[prevLogIndex].LogTerm
-		}
-		leaderCommit := rf.commitIndex
+			//term := rf.currentTerm
+			//state := rf.serverState
+			prevLogIndex := rf.nextIndex[serverIndex]-1
+			prevLogTerm := rf.getLogTerm(prevLogIndex)
+			leaderCommit := rf.commitIndex
 
-		// entries are in reverse index order!
-		entries = append( entries, rf.log[prevLogIndex+1])
+			// entries are in reverse index order!
 
-		rf.mu.Unlock()
+		 	// https://codingair.wordpress.com/2014/07/18/go-appendprepend-item-into-slice/
+			entries = append( []LogEntry{rf.getLog(prevLogIndex+1)}, entries...)
 
-		if term == termWhenStarted && state == SERVER_STATE_LEADER {
+			// Remember to decode entries in reverse order
+			// TODO optional: optimize to avoid sending entries before serverIndex converges
 
-			// TODO: decode entries in reverse order
-			// TODO: optimize to avoid sending entries before serverIndex converges
+			args := AppendEntriesArgs{rf.currentTerm, rf.me, prevLogIndex, prevLogTerm, entries, leaderCommit}
 
-			args := AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, entries, leaderCommit}
+			rf.mu.Unlock()
 
 			reply := AppendEntriesReply{}
-
 			ok := rf.peers[serverIndex].Call("Raft.AppendEntries", &args, &reply)
 
-			if ok {
-				if reply.Success {
-					fmt.Println("Leader succeeded to append an entry to server",serverIndex,".")
-					rf.mu.Lock()
-					rf.nextIndex[serverIndex] += len(entries)
-					rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
-					rf.mu.Unlock()
+			rf.mu.Lock()
 
-					// TODO: try to commit entries if possible
+			if rf.currentTerm == termWhenStarted && rf.serverState == SERVER_STATE_LEADER {
+				// necessary to check if the RPC issuer is still the same term leader in charge.
 
-					break
-				} else {
-					/* TODO: This is probably optional, add it later.
+				if ok {
+					if reply.Success {
+						fmt.Println("Leader",rf.me,"succeeded to append entries",args.PrevLogIndex+1,"to server", serverIndex, ".")
+						rf.nextIndex[serverIndex] += len(entries)
+						rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
+
+						// TODO: try to commit entries if possible
+						go func() {
+							rf.commitCheckerTriggerChan <- true
+						}()
+
+						break
+					} else {
+						/* TODO optional: This is probably optional, add it later.
 
 
 					termNoLessThan := true
 					rf.mu.Lock()
-					// TODO: consider make this a checkTermNoLessThan fun
+					// TODO optional: consider make this a checkTermNoLessThan fun
 					if rf.currentTerm < reply.Term {
 						termNoLessThan = false
 						rf.currentTerm = reply.Term
@@ -789,18 +815,11 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 					*/
 
-					// Retreat
-					rf.mu.Lock()
-
-					if rf.currentTerm == termWhenStarted && rf.serverState == SERVER_STATE_LEADER {
+						// Retreat
 						rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
-						// TODO: decrease more than 1 as suggested in the lecture
+						// TODO optional: decrease more than 1 as suggested in the lecture
 					}
-
-					rf.mu.Unlock()
 				}
-
-
 			}
 
 		} else{
@@ -938,7 +957,7 @@ func (rf *Raft) stateCandidateToLeader() {
 
 		for i,_ := range rf.peers {
 			// Initialized to the leader's last log index + 1 = len(rf.log)-1 + 1 = len(rf.log)
-			rf.nextIndex[i] = len(rf.log)
+			rf.nextIndex[i] = rf.getLastLogIndex() + 1
 
 			rf.matchIndex[i] = 0
 		}
@@ -1263,6 +1282,69 @@ func (rf *Raft) initServerState(state ServerState) {
 	}
 }
 
+func (rf *Raft) startCommitChecker() {
+
+	for {
+		<- rf.commitCheckerTriggerChan
+
+
+		for i:= 0; i<len(rf.peers); i++ {
+			rf.peerBeingAppend[i].Lock()
+		}
+
+		// lock between rf.peerBeingAppend[i].Lock()/Unlock()
+		// otherwise it may deadlock
+		rf.mu.Lock()
+
+		if rf.serverState==SERVER_STATE_LEADER {
+
+			// If there exists an N such that N > commitIndex, a majority
+			// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+			// set commitIndex = N (§5.3, §5.4).
+			N := rf.commitIndex
+			for cN := rf.commitIndex + 1; cN <= rf.getLastLogIndex(); cN++ {
+				if rf.getLogTerm(cN) != rf.currentTerm {
+					continue
+				}
+				count := 1
+				for i := 0; i < len(rf.peers); i++ {
+					if i == rf.me {
+						continue
+					}
+					if cN <= rf.matchIndex[i] {
+						count++
+					}
+				}
+				if count*2 > len(rf.peers) {
+					N = cN
+				}
+			}
+			if N > rf.commitIndex {
+				fmt.Println("New committed index: ", N, "")
+
+				// other server will figure out this later from RPC calls
+
+				for i := rf.commitIndex + 1; i <= N; i++ {
+					msg := ApplyMsg{true, rf.getLog(i).Command, i}
+					if msg.CommandIndex!=0 {
+						rf.applyChan <- msg
+					}
+					// do not do this in a goroutine, since the order could be lost
+				}
+
+				rf.commitIndex = N
+			}
+
+		}
+
+		rf.mu.Unlock()
+
+		for i:= 0; i<len(rf.peers); i++ {
+			rf.peerBeingAppend[i].Unlock()
+		}
+	}
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -1295,7 +1377,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.heartbeatsChan = make( chan bool, 200)
 
 	if enable_lab_2b {
-		rf.applyChan = make( chan ApplyMsg, 200)
+		rf.log = make([] LogEntry, 1)
+		rf.log[0] = LogEntry{} // Place holder
+		rf.applyChan = applyCh
+		rf.commitCheckerTriggerChan = make( chan bool, 200)
 		rf.peerBeingAppend = make( [] sync.Mutex, len(rf.peers))
 		rf.baseIndex = 0
 	}
@@ -1312,6 +1397,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
 
+	go rf.startCommitChecker()
 
 	// go rf.stateMachineLoop()
 
