@@ -38,11 +38,11 @@ import (
 // I found it on piazza https://piazza.com/class/j9xqo2fm55k1cy?cid=99,
 // why this requirement?
 // Unit: millisecond.
-const HeartbeatSendPeriod = 100
-const HeartbeatTimeoutLower = 250
-const ElectionTimeoutLower = 250
-const HeartbeatTimeoutUpper = 400
-const ElectionTimeoutUpper = 400
+const HeartbeatSendPeriod = 150//100
+const HeartbeatTimeoutLower = 400//250
+const ElectionTimeoutLower = 400//250
+const HeartbeatTimeoutUpper = 700//700//400
+const ElectionTimeoutUpper = 700//700//400
 // wangyu: some design parameters:
 
 const verbose = 0
@@ -260,9 +260,10 @@ type Raft struct {
 	applyChan chan ApplyMsg // used by every server
 	commitCheckerTriggerChan chan bool // used by leader, send a signal to it whenever any matchIndex is updated.
 
-	peerBeingAppend [] sync.Mutex
+	peerBeingAppend []*sync.Mutex
  	// cannot have more than one tryAppendEntriesRecursively running at the same time
 
+ 	applyStack []ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -520,6 +521,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 	rf.mu.Lock()
 
 	reply.Success = false
+	reply.Term = rf.currentTerm
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
@@ -571,6 +573,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 			if args.PrevLogIndex > rf.getLastLogIndex() || rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {
 				// 2. Reply false if log doesn’t contain an entry at prevLogIndex
 				// whose term matches prevLogTerm (§5.3)
+				fmt.Println("AppendEntries: Case 2 false")
 				reply.Success = false
 			} else {
 				reply.Success = true
@@ -600,6 +603,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 					}
 				}
 			}
+		} else {
+			// this is a heartbeat
+			reply.Success = true
 		}
 
 		// 5. If leaderCommit > commitIndex, set commitIndex =
@@ -614,29 +620,31 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 			msgs := make([]ApplyMsg, 0)
 
-
-
 			for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
-				msgs = append(msgs, ApplyMsg{true, rf.getLog(i).Command, i})
+				msg := ApplyMsg{i>0, rf.getLog(i).Command, i}
+				msgs = append(msgs, msg)
 				fmt.Println("Server",rf.me, "commited entry [",i, "].")
+				rf.applyStack = append(rf.applyStack, msg)
 			}
 
-			go func(msgs []ApplyMsg) {
+			/*go func(msgs []ApplyMsg) {
 				//  order is perserved
 				for i:=0; i<len(msgs); i++ {
-					if msgs[i].CommandIndex!=0 {
 						// the log with index 0 is a place holder and do not need to be applied
+						fmt.Println("Server", rf.me, "apply msg",msgs[i].Command)
 						rf.applyChan <- msgs[i]
-					}
 				}
-			}(msgs)
+			}(msgs)*/
 		}
 	}
 
 
 	// Put this last seems a good choice for me.
 	// do not need to have it within goroutine
-	rf.heartbeatsChan <- true
+	go func() { // change this for lab2b
+		rf.heartbeatsChan <- true
+	}()
+
 	// whenever this channel is sent, the heartbeats channel will be reset.
 	// fmt.Println("Double check rf.heartbeatsChan is picked.")
 
@@ -735,8 +743,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // used if enable_lab_2b
 func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted int){
 
+	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 0.")
+
 	rf.peerBeingAppend[serverIndex].Lock()
 	// make sure at most one tryAppendEntriesRecursively running for the serverIndex-th server
+
+	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
 
 	entries := make( [] LogEntry, 0)
 
@@ -744,10 +756,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	// everything is protected except the RPC call.
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 
 	for {
+
+		fmt.Println(".")
 
 		if rf.currentTerm == termWhenStarted && rf.serverState == SERVER_STATE_LEADER {
 
@@ -767,6 +779,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 			args := AppendEntriesArgs{rf.currentTerm, rf.me, prevLogIndex, prevLogTerm, entries, leaderCommit}
 
+			// TODO optional: optimize this later
 			rf.mu.Unlock()
 
 			reply := AppendEntriesReply{}
@@ -779,7 +792,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 				if ok {
 					if reply.Success {
-						fmt.Println("Leader",rf.me,"succeeded to append entries",args.PrevLogIndex+1,"to server", serverIndex, ".")
+						fmt.Println("Leader",rf.me,"succeeded to append entries [",args.PrevLogIndex+1,",",args.PrevLogIndex+1+len(entries),") to server", serverIndex, ".")
 						rf.nextIndex[serverIndex] += len(entries)
 						rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 
@@ -790,36 +803,39 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 						break
 					} else {
-						/* TODO optional: This is probably optional, add it later.
+						// This is actual *not* optional and missing this part leads to deadlock.
+						// Especially, for TestFailAgree2B, an offline server becoming back online needs to
+						// use this to force the leader quit, and re-elect later.
 
-
-					termNoLessThan := true
-					rf.mu.Lock()
-					// TODO optional: consider make this a checkTermNoLessThan fun
-					if rf.currentTerm < reply.Term {
-						termNoLessThan = false
-						rf.currentTerm = reply.Term
-						rf.votedFor = -1
-						switch rf.serverState {
-						case SERVER_STATE_FOLLOWER:
-						case SERVER_STATE_CANDIDATE:
-							rf.stateCandidateToFollower()
-						case SERVER_STATE_LEADER:
-							rf.stateLeaderToFollower()
+						termNoLessThan := true
+						// TODO optional: consider make this a checkTermNoLessThan fun
+						if rf.currentTerm < reply.Term {
+							termNoLessThan = false
+							rf.currentTerm = reply.Term
+							rf.votedFor = -1
+							switch rf.serverState {
+							case SERVER_STATE_FOLLOWER:
+							case SERVER_STATE_CANDIDATE:
+								rf.stateCandidateToFollower()
+							case SERVER_STATE_LEADER:
+								rf.stateLeaderToFollower()
+							}
 						}
-					}
-					rf.mu.Unlock()
-					if !termNoLessThan {
-						break
-					}
-
-					*/
+						if !termNoLessThan {
+							break
+						}
 
 						// Retreat
+						fmt.Println("Leader",rf.me,"failed to append entries",args.PrevLogIndex+1,"to server", serverIndex, ".")
 						rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 						// TODO optional: decrease more than 1 as suggested in the lecture
 					}
+				} else {
+					fmt.Println("Leader",rf.me,"failed to call Raft.AppendEntries",args.PrevLogIndex+1,"to server", serverIndex, ".")
+					break// important to break here.
 				}
+			} else {
+				break
 			}
 
 		} else{
@@ -830,9 +846,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	}
 
 
+	rf.mu.Unlock()
 	rf.peerBeingAppend[serverIndex].Unlock()
 
-	fmt.Println("Exit tryAppendEntriesRecursively()")
+	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 2.")
 
 }
 
@@ -963,6 +980,8 @@ func (rf *Raft) stateCandidateToLeader() {
 		}
 
 	}
+
+	fmt.Println("New leader elected:", rf.me,"for term", rf.currentTerm)
 }
 
 func (rf *Raft) stateCandidateToFollower() {
@@ -981,7 +1000,11 @@ func (rf *Raft) stateCandidateToFollower() {
 	// where to put this line should not really matter, since the competitor timer
 	// of rf.heartbeatschan  case time.After(xxx) is followed by lock(), so it has to
 	// wait till the lock is released. This just makes the timeout period slight longer.
-	rf.heartbeatsChan <- true
+
+	go func() { // move it in a goroutine from lab2b
+		rf.heartbeatsChan <- true
+	}()
+
 }
 
 func (rf *Raft) stateLeaderToFollower() {
@@ -997,7 +1020,9 @@ func (rf *Raft) stateLeaderToFollower() {
 
 	rf.serverState = SERVER_STATE_FOLLOWER
 
-	rf.heartbeatsChan <- true
+	go func() { // move it in a goroutine from lab2b
+		rf.heartbeatsChan <- true
+	}()
 }
 
 
@@ -1136,9 +1161,9 @@ func (rf *Raft) initHeartbeatSender(){
 							ok := peer.Call("Raft.AppendEntries", &args, &reply)
 
 							if ok {
-								if verbose >= 2 {
+								//if verbose >= 2 {
 									fmt.Println("Server ", rf.me, "successfully sends heartbeat msg to server ", index, ".")
-								}
+								//}
 								if reply.Success {
 									// not really need to use the reply value
 									// TODO optional: check reply.Term
@@ -1288,13 +1313,19 @@ func (rf *Raft) startCommitChecker() {
 		<- rf.commitCheckerTriggerChan
 
 
+		fmt.Println("startCommitChecker() step 0")
+
 		for i:= 0; i<len(rf.peers); i++ {
-			rf.peerBeingAppend[i].Lock()
+			//rf.peerBeingAppend[i].Lock()
 		}
+
+		fmt.Println("startCommitChecker() step 1")
 
 		// lock between rf.peerBeingAppend[i].Lock()/Unlock()
 		// otherwise it may deadlock
 		rf.mu.Lock()
+
+		fmt.Println("startCommitChecker() step 2")
 
 		if rf.serverState==SERVER_STATE_LEADER {
 
@@ -1320,17 +1351,29 @@ func (rf *Raft) startCommitChecker() {
 				}
 			}
 			if N > rf.commitIndex {
-				fmt.Println("New committed index: ", N, "")
+				fmt.Println("Leader", rf.me, "committed index: ", N, "")
 
 				// other server will figure out this later from RPC calls
 
+
+				msgs := make([]ApplyMsg, 0)
+
 				for i := rf.commitIndex + 1; i <= N; i++ {
-					msg := ApplyMsg{true, rf.getLog(i).Command, i}
-					if msg.CommandIndex!=0 {
-						rf.applyChan <- msg
-					}
-					// do not do this in a goroutine, since the order could be lost
+					msg := ApplyMsg{i>0, rf.getLog(i).Command, i}
+					msgs = append(msgs, msg)
+					//fmt.Println("Leader", rf.me, "apply msg", msg.Command)
+					rf.applyStack = append(rf.applyStack, msg)
 				}
+
+				//  do this in a goroutine
+				/*go func(msgs []ApplyMsg) {
+					//  order is perserved
+					for i:=0; i<len(msgs); i++ {
+							// the log with index 0 is a place holder and do not need to be applied
+							fmt.Println("Leader", rf.me, "apply msg",msgs[i].Command)
+							rf.applyChan <- msgs[i]
+					}
+				}(msgs)*/
 
 				rf.commitIndex = N
 			}
@@ -1339,8 +1382,8 @@ func (rf *Raft) startCommitChecker() {
 
 		rf.mu.Unlock()
 
-		for i:= 0; i<len(rf.peers); i++ {
-			rf.peerBeingAppend[i].Unlock()
+		for i:= len(rf.peers)-1; i>=0; i-- {
+			//rf.peerBeingAppend[i].Unlock()
 		}
 	}
 }
@@ -1378,10 +1421,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	if enable_lab_2b {
 		rf.log = make([] LogEntry, 1)
+		rf.applyStack = make([] ApplyMsg, 0)
 		rf.log[0] = LogEntry{} // Place holder
 		rf.applyChan = applyCh
 		rf.commitCheckerTriggerChan = make( chan bool, 200)
-		rf.peerBeingAppend = make( [] sync.Mutex, len(rf.peers))
+		rf.peerBeingAppend = make( []*sync.Mutex, len(rf.peers))
+		for i:=0; i<len(rf.peerBeingAppend); i++ {
+			rf.peerBeingAppend[i] = &sync.Mutex{}
+		}
 		rf.baseIndex = 0
 	}
 
@@ -1398,6 +1445,23 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.initHeartbeatMonitor()
 
 	go rf.startCommitChecker()
+
+	go func() {
+		for {
+			rf.mu.Lock()
+			// clear the stack
+			copyStack := rf.applyStack
+			rf.applyStack = nil
+			rf.applyStack = make([] ApplyMsg, 0)
+			rf.mu.Unlock()
+
+			for i:=0; i<len(copyStack); i++ {
+				rf.applyChan <- copyStack[i]
+			}
+
+			time.Sleep(50*time.Millisecond)
+		}
+	}()
 
 	// go rf.stateMachineLoop()
 
