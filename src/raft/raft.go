@@ -38,11 +38,11 @@ import (
 // I found it on piazza https://piazza.com/class/j9xqo2fm55k1cy?cid=99,
 // why this requirement?
 // Unit: millisecond.
-const HeartbeatSendPeriod = 150//100
-const HeartbeatTimeoutLower = 400//250
-const ElectionTimeoutLower = 400//250
-const HeartbeatTimeoutUpper = 700//700//400
-const ElectionTimeoutUpper = 700//700//400
+const HeartbeatSendPeriod = 100//100
+const HeartbeatTimeoutLower = 250//250
+const ElectionTimeoutLower = 250//250
+const HeartbeatTimeoutUpper = 400//700//400
+const ElectionTimeoutUpper = 400//700//400
 // wangyu: some design parameters:
 
 const verbose = 0
@@ -88,7 +88,7 @@ const (  // iota is reset to 0
 	//	SERVER_STATE_BASE ServerState = iota
 	ErrorType_AppendEntries_DEFAULT ErrorTypeAppendEntries = iota  //  == 0
 	ErrorType_AppendEntries_NO_LOG_WITH_RIGHT_TERM ErrorTypeAppendEntries = iota  //  == 1
-	// ErrorTypeAppendEntries = iota  //  == 2
+	ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM = iota  //  == 2
 )
 
 func (serverState *ServerState) toString() (string) {
@@ -525,12 +525,22 @@ func max(a, b int) int {
 	return b
 }
 
+var counter = 0 // TODO: remove.
+
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.mu.Lock()
 
-	reply.Success = false
+	reply.Success = true
 	reply.Term = rf.currentTerm
+
+	if len(args.Entries)>0 && args.Entries[0].Command==105 {
+
+		if counter == 3 {
+			fmt.Println("Debug point3")
+		}
+		counter = counter + 1
+	}
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
@@ -538,6 +548,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		if verbose >= 1 {
 			fmt.Println("Server ", rf.me," received stale RPC from the (stale) leader", args.LeaderID,".")
 		}
+		reply.Error = ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM
 		reply.Success = false
 		rf.mu.Unlock() // careful about the lock before return
 		return
@@ -600,7 +611,22 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						if rf.getLogTerm(args.PrevLogIndex+1+i) != args.Entries[i].LogTerm {// if conflicts
 							fmt.Println("Server",rf.me,"AppendEntries(): conflicting log detected.")
 							rf.deleteLogSince(args.PrevLogIndex+1+i)
+
+							if args.Entries[i].Command == rf.getLog(rf.getLastLogIndex()).Command {
+								fmt.Println("Debug point4")
+							}
+
 							rf.log = append(rf.log, args.Entries[i])
+
+							for i:=0; i<len(args.Entries); i++ {
+								fmt.Println("Entry appended", args.Entries[i])
+							}
+							fmt.Println("Current log:")
+							for i:=0; i<len(rf.log); i++ {
+								fmt.Println(rf.log[i])
+							}
+
+
 						} else {
 							// no need to append
 							// TODO: double check the command are same
@@ -614,7 +640,19 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						}
 					} else {
 						fmt.Println("Server",rf.me,"AppendEntries(): appending log index=",args.PrevLogIndex+1+i,"command",args.Entries[i].Command,".")
+						if args.Entries[i].Command == rf.getLog(rf.getLastLogIndex()).Command {
+							fmt.Println("Debug point5")
+						}
+
 						rf.log = append(rf.log, args.Entries[i])
+
+						for i:=0; i<len(args.Entries); i++ {
+							fmt.Println("Entry appended", args.Entries[i])
+						}
+						fmt.Println("Current log:")
+						for i:=0; i<len(rf.log); i++ {
+							fmt.Println(rf.log[i])
+						}
 					}
 				}
 
@@ -625,7 +663,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 					oldCommitIndex := rf.commitIndex
 
 					index_of_last_new_entry := rf.getLastLogIndex()
-					// this is only true for non-heartbeat appendentries that succeed to append (even empty) entries.
+					// TODO: this is only true for non-heartbeat appendentries that succeed to append (even empty) entries.
 					// index_of_last_new_entry is pretty hard to get right
 
 					rf.commitIndex = min(args.LeaderCommit, index_of_last_new_entry) // index of last new entry
@@ -734,20 +772,24 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
+
 	if enable_lab_2b {
+
+		isLeader = false
+
 		rf.mu.Lock()
 
+		term = rf.currentTerm
 		isLeader = (rf.serverState == SERVER_STATE_LEADER)
 
 		if isLeader {
 
-			index = rf.getLastLogIndex()+1
-			term = rf.currentTerm
-
+			index = rf.getLastLogIndex() + 1
 			entry := LogEntry{rf.currentTerm,command}
 			rf.log = append(rf.log, entry)
 
-			fmt.Println("Start(): rf.log size is:",len(rf.log))
+			fmt.Println("Server",rf.me,"Start(): rf.log size is:",len(rf.log))
+			fmt.Println("new log entry: ",entry)
 
 			// Notify all other servers.
 			for i,_ := range rf.peers {
@@ -756,7 +798,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				}
 			}
 		}
-
 
 		rf.mu.Unlock()
 	}
@@ -768,14 +809,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // used if enable_lab_2b
 func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted int){
 
-	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 0.")
+	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 0.")
 
 	rf.peerBeingAppend[serverIndex].Lock()
 	// make sure at most one tryAppendEntriesRecursively running for the serverIndex-th server
 
-	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
+	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
 
-	entries := make( [] LogEntry, 0)
+	// entries := make( [] LogEntry, 0)
 
 	// Lock is used in a rather unique way:
 	// everything is protected except the RPC call.
@@ -784,7 +825,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 	for {
 
-		fmt.Println(".")
+		//fmt.Println(".")
 
 		if rf.currentTerm == termWhenStarted && rf.serverState == SERVER_STATE_LEADER {
 
@@ -797,7 +838,8 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			// entries are in reverse index order!
 
 		 	// https://codingair.wordpress.com/2014/07/18/go-appendprepend-item-into-slice/
-			entries = append( []LogEntry{rf.getLog(prevLogIndex+1)}, entries...)
+			// entries = append( []LogEntry{rf.getLog(prevLogIndex+1)}, entries...)
+			entries := rf.log[(prevLogIndex+1):]
 
 			// Remember to decode entries in reverse order
 			// TODO optional: optimize to avoid sending entries before serverIndex converges
@@ -824,7 +866,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						fmt.Println("Leader",rf.me,"succeeded to append entries [",args.PrevLogIndex+1,
 							",",args.PrevLogIndex+1+len(entries),") to server", serverIndex, ".")
 						for i:=0; i<len(entries); i++ {
-							//fmt.Println("Entry",entries[i].)
+							fmt.Println("Entry",entries[i])
 						}
 
 						rf.nextIndex[serverIndex] += len(entries)
@@ -840,11 +882,16 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_RIGHT_TERM {
 
+							// Retreat
+							fmt.Println("Leader",rf.me,"failed to append entries",args.PrevLogIndex+1,"to server", serverIndex, ".")
+							rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
+							// TODO optional: decrease more than 1 as suggested in the lecture
+						} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
+
 							// This is actual *not* optional and missing this part leads to deadlock.
 							// Especially, for TestFailAgree2B, an offline server becoming back online needs to
 							// use this to force the leader quit, and re-elect later.
 
-							/*
 							termNoLessThan := true
 							// TODO optional: consider make this a checkTermNoLessThan fun
 							if rf.currentTerm < reply.Term {
@@ -862,12 +909,6 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							if !termNoLessThan {
 								break
 							}
-							*/
-
-							// Retreat
-							fmt.Println("Leader",rf.me,"failed to append entries",args.PrevLogIndex+1,"to server", serverIndex, ".")
-							rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
-							// TODO optional: decrease more than 1 as suggested in the lecture
 						} else {
 							fmt.Println("ERROR: not implemented!!!!!!!!!!!!!!!!")
 							break
@@ -894,7 +935,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	rf.mu.Unlock()
 	rf.peerBeingAppend[serverIndex].Unlock()
 
-	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 2.")
+	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 2.")
 
 }
 
@@ -1171,66 +1212,82 @@ func (rf *Raft) initHeartbeatMonitor() {
 
 func (rf *Raft) initHeartbeatSender(){
 
-	for i,p := range rf.peers {
-		if i!= rf.me {
-			go func(peer *labrpc.ClientEnd, index int) {
+	/*
+	for i,_ := range rf.peers {
+		if i != rf.me {
+			rf.mu.Lock()
+			term := rf.currentTerm
+			rf.mu.Unlock()
+			go rf.trySendAppendEntriesRecursively(i, term) // i is sent in.
 
-				for {
-
-					rf.mu.Lock()
-					term := rf.currentTerm
-					state := rf.serverState
-					// TODO: for heartbeat try not to use these on the receiver side.
-					prevLogIndex := rf.getLastLogIndex()//
-					prevLogTerm := rf.getLastLogTerm()
-					leaderCommit := rf.commitIndex
-					rf.mu.Unlock()
-
-					// no need to lock the following, since goroutines and RPCs incur delay anyway.
-
-					if state == SERVER_STATE_LEADER {
-						// Only leader sends heartbeat signal
-
-						// args := AppendEntriesArgs{term, rf.me}
-						args := AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, make([]LogEntry, 0), leaderCommit}
-
-						// Put this in a go routine, which is optional.
-						// So the delay in RPC is also considered as part of the network delay
-
-						go func(args AppendEntriesArgs) {
-
-							reply := AppendEntriesReply{}
-							// non default values like {-1, false} leads to
-							// labgob warning: Decoding into a non-default variable/field Term may not work
-							// https://piazza.com/class/j9xqo2fm55k1cy?cid=75
-
-							//fmt.Println("Server ", rf.me, "tries to send heartbeat msg to server ",index,".")
-
-							ok := peer.Call("Raft.AppendEntries", &args, &reply)
-
-							if ok {
-								if verbose >= 2 {
-									fmt.Println("Server ", rf.me, "successfully sends heartbeat msg to server ", index, ".")
-								}
-								if reply.Success {
-									// not really need to use the reply value
-									// TODO optional: check reply.Term
-								}
-							} else {
-								if verbose >= 2 {
-									fmt.Println("Server ", rf.me, "fails to send heartbeat msg to server ", index, ".")
-								}
-							}
-
-						}(args)
-
-
-					}
-					time.Sleep(HeartbeatSendPeriod*time.Millisecond)
-				}
-			}(p,i) // i must be sent in.
+			time.Sleep(HeartbeatSendPeriod * time.Millisecond)
 		}
 	}
+	*/
+
+
+	for i,p := range rf.peers {
+
+		go func(peer *labrpc.ClientEnd, index int) {
+
+			for {
+
+				rf.mu.Lock()
+				term := rf.currentTerm
+				state := rf.serverState
+				// TODO: for heartbeat try not to use these on the receiver side.
+				prevLogIndex := rf.getLastLogIndex() //TODO: this is clearly a bug
+				// prevLogIndex := rf.getLastLogIndex()
+				prevLogTerm := rf.getLastLogTerm()
+				leaderCommit := rf.commitIndex
+				rf.mu.Unlock()
+
+				// no need to lock the following, since goroutines and RPCs incur delay anyway.
+
+				if state == SERVER_STATE_LEADER {
+					// Only leader sends heartbeat signal
+
+					// args := AppendEntriesArgs{term, rf.me}
+					args := AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, make([]LogEntry, 0), leaderCommit}
+
+					// Put this in a go routine, which is optional.
+					// So the delay in RPC is also considered as part of the network delay
+
+					go func(args AppendEntriesArgs) {
+
+						reply := AppendEntriesReply{}
+						// non default values like {-1, false} leads to
+						// labgob warning: Decoding into a non-default variable/field Term may not work
+						// https://piazza.com/class/j9xqo2fm55k1cy?cid=75
+
+						//fmt.Println("Server ", rf.me, "tries to send heartbeat msg to server ",index,".")
+
+						ok := peer.Call("Raft.AppendEntries", &args, &reply)
+
+						if ok {
+							if verbose >= 2 {
+								fmt.Println("Server ", rf.me, "successfully sends heartbeat msg to server ", index, ".")
+							}
+							if reply.Success {
+								// not really need to use the reply value
+								// TODO optional: check reply.Term
+							}
+						} else {
+							if verbose >= 2 {
+								fmt.Println("Server ", rf.me, "fails to send heartbeat msg to server ", index, ".")
+							}
+						}
+
+					}(args)
+
+				}
+				time.Sleep(HeartbeatSendPeriod * time.Millisecond)
+			}
+		}(p, i) // i must be sent in.
+
+	}
+
+
 }
 
 func (rf *Raft) startElection(termWhenInit int) {
