@@ -39,21 +39,26 @@ import (
 // why this requirement?
 // Unit: millisecond.
 const HeartbeatSendPeriod = 100//100
-const HeartbeatTimeoutLower = 250//250
-const ElectionTimeoutLower = 250//250
-const HeartbeatTimeoutUpper = 400//700//400
-const ElectionTimeoutUpper = 400//700//400
+
+const HeartbeatTimeoutLower = 200//250
+const ElectionTimeoutLower = 200//250
+const HeartbeatTimeoutUpper = 500//700//400
+const ElectionTimeoutUpper = 500//700//400
 // wangyu: some design parameters:
 
 const verbose = 0
 
-const enable_lab_2b = true
+const enable_lab_2b = true // must be true in final submission
+
+
 
 const enable_incrementing_output = false
 const enable_debug_lab_2b = false
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
-	return time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
+	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
+	// fmt.Println(r)
+	return r
 }
 
 //
@@ -262,6 +267,8 @@ type Raft struct {
 	// this two channels are protected by locks, and does not need to be in a separate goroutine.
 
 	heartbeatsChan chan bool
+
+	heartbeatsSendChan [] chan bool // this is used for leader only
 
 	// I have got rid of the use of eventsChan, and use
 	// program call instead. My eventsChan was a misuse of
@@ -808,6 +815,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				fmt.Println("Server", rf.me, "Start(): rf.log size is:", len(rf.log))
 				fmt.Println("new log entry: ", entry)
 			}
+
 			// Notify all other servers.
 			for i,_ := range rf.peers {
 				if i!= rf.me {
@@ -825,6 +833,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 // used if enable_lab_2b
 func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted int){
+
 
 	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 0.")
 
@@ -965,6 +974,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 	rf.mu.Unlock()
 	rf.peerBeingAppend[serverIndex].Unlock()
+
+	//go func() {
+		rf.heartbeatsSendChan[serverIndex] <- true
+	//}()
 
 	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 2.")
 
@@ -1251,20 +1264,91 @@ func (rf *Raft) initHeartbeatMonitor() {
 
 func (rf *Raft) initHeartbeatSender(){
 
-	/*
+/*
 	for i,_ := range rf.peers {
 		if i != rf.me {
 			rf.mu.Lock()
 			term := rf.currentTerm
 			rf.mu.Unlock()
+
 			go rf.trySendAppendEntriesRecursively(i, term) // i is sent in.
 
-			time.Sleep(HeartbeatSendPeriod * time.Millisecond)
+			// time.Sleep(HeartbeatSendPeriod * time.Millisecond)
+			time.Sleep(randTimeBetween(HeartbeatSendPeriod/2, HeartbeatSendPeriod*2))
 		}
 	}
-	*/
+*/
 
 
+	for i,_ := range rf.peers {
+		//if i != rf.me {
+		if true {
+			go func(rf *Raft, index int) {
+				for {
+					select {
+					case <- rf.heartbeatsSendChan[index]:
+					case <- time.After( (HeartbeatSendPeriod * time.Millisecond) ):
+						go func(index int) {
+
+								rf.mu.Lock()
+								term := rf.currentTerm
+								state := rf.serverState
+								// TODO: for heartbeat try not to use these on the receiver side.
+								prevLogIndex := rf.getLastLogIndex() //TODO: this is clearly a bug
+								// prevLogIndex := rf.getLastLogIndex()
+								prevLogTerm := rf.getLastLogTerm()
+								leaderCommit := rf.commitIndex
+								rf.mu.Unlock()
+
+								// no need to lock the following, since goroutines and RPCs incur delay anyway.
+
+								if state == SERVER_STATE_LEADER {
+									// Only leader sends heartbeat signal
+
+									// args := AppendEntriesArgs{term, rf.me}
+									args := AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, make([]LogEntry, 0), leaderCommit}
+
+									// Put this in a go routine, which is optional.
+									// So the delay in RPC is also considered as part of the network delay
+
+									go func(args AppendEntriesArgs) {
+
+										reply := AppendEntriesReply{}
+										// non default values like {-1, false} leads to
+										// labgob warning: Decoding into a non-default variable/field Term may not work
+										// https://piazza.com/class/j9xqo2fm55k1cy?cid=75
+
+										//fmt.Println("Server ", rf.me, "tries to send heartbeat msg to server ",index,".")
+
+										ok := rf.peers[index].Call("Raft.AppendEntries", &args, &reply)
+
+										if ok {
+											if verbose >= 2 {
+												fmt.Println("Server ", rf.me, "successfully sends heartbeat msg to server ", index, ".")
+											}
+											if reply.Success {
+												// not really need to use the reply value
+												// TODO optional: check reply.Term
+											}
+										} else {
+											if verbose >= 2 {
+												fmt.Println("Server ", rf.me, "fails to send heartbeat msg to server ", index, ".")
+											}
+										}
+
+									}(args)
+
+								}
+
+						}(index) // i must be sent in.
+					}
+				}
+			}(rf, i)
+		}
+	}
+
+
+/*
 	for i,p := range rf.peers {
 
 		go func(peer *labrpc.ClientEnd, index int) {
@@ -1325,7 +1409,7 @@ func (rf *Raft) initHeartbeatSender(){
 		}(p, i) // i must be sent in.
 
 	}
-
+*/
 
 }
 
@@ -1412,6 +1496,38 @@ func (rf *Raft) startElection(termWhenInit int, waitPeriod time.Duration) {
 					return
 				}
 				if 2*votesCountFalse>=n { //use >= here
+					// stateCandidateToCandidate is subject to two step verification
+					// to avoid multiple completing Candidate
+					preCandidate := false
+					rf.mu.Lock()
+					if rf.currentTerm == termWhenInit {
+						preCandidate = true
+					}
+					rf.mu.Unlock()
+					if preCandidate {
+						time.Sleep( randTimeBetween(ElectionTimeoutLower, ElectionTimeoutUpper) )
+						// Maybe consider make it a seperate parameter.
+						rf.mu.Lock()
+						if rf.currentTerm == termWhenInit {
+							// Currently treating losing an election same as timeout
+							//rf.eventsChan <- EVENT_ELECTION_TIMEOUT
+							rf.stateCandidateToCandidate()
+						}
+						rf.mu.Unlock()
+					}
+					return
+				}
+		case <- electionTimeoutChan:
+			// copy pasted from above, merge the two case.
+				preCandidate := false
+				rf.mu.Lock()
+				if rf.currentTerm == termWhenInit {
+					preCandidate = true
+				}
+				rf.mu.Unlock()
+				if preCandidate {
+					time.Sleep( randTimeBetween(ElectionTimeoutLower, ElectionTimeoutUpper) )
+					// Maybe consider make it a seperate parameter.
 					rf.mu.Lock()
 					if rf.currentTerm == termWhenInit {
 						// Currently treating losing an election same as timeout
@@ -1419,15 +1535,7 @@ func (rf *Raft) startElection(termWhenInit int, waitPeriod time.Duration) {
 						rf.stateCandidateToCandidate()
 					}
 					rf.mu.Unlock()
-					return
 				}
-		case <- electionTimeoutChan:
-				rf.mu.Lock()
-				if rf.currentTerm == termWhenInit {
-					//rf.eventsChan <- EVENT_ELECTION_TIMEOUT
-					rf.stateCandidateToCandidate()
-				}
-				rf.mu.Unlock()
 				return
 		}
 
@@ -1562,6 +1670,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// (initialized to 0 on first boot, increases monotonically)
 	rf.votedFor = -1
 
+	rand.Seed(int64(rf.me))
+
 	// rf.commitIndex // 2B
 
 
@@ -1579,6 +1689,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.peerBeingAppend[i] = &sync.Mutex{}
 		}
 		rf.baseIndex = 0
+		rf.heartbeatsSendChan = make( []chan bool, len(rf.peers))
+		for i:=0; i<len(rf.heartbeatsChan); i++ {
+			rf.heartbeatsSendChan[i] = make( chan bool, 200)
+		}
 	}
 
 
@@ -1608,7 +1722,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				rf.applyChan <- copyStack[i]
 			}
 
-			time.Sleep(50*time.Millisecond)
+			time.Sleep(50*time.Millisecond) // TODO: why need this?
 		}
 	}()
 
