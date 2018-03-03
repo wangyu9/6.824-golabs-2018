@@ -49,6 +49,9 @@ const verbose = 0
 
 const enable_lab_2b = true
 
+const enable_incrementing_output = false
+const enable_debug_lab_2b = false
+
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	return time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
 }
@@ -427,6 +430,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.currentTerm {
+		if enable_incrementing_output {
+			fmt.Println("Server", rf.me, "RequestVote(): Increamenting current term from", rf.currentTerm, "to", args.Term)
+		}
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		switch rf.serverState {
@@ -525,7 +531,6 @@ func max(a, b int) int {
 	return b
 }
 
-var counter = 0 // TODO: remove.
 
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
@@ -534,13 +539,6 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 	reply.Success = true
 	reply.Term = rf.currentTerm
 
-	if len(args.Entries)>0 && args.Entries[0].Command==105 {
-
-		if counter == 3 {
-			fmt.Println("Debug point3")
-		}
-		counter = counter + 1
-	}
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
@@ -561,6 +559,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 	// update current term from args.Term
 	if args.Term > rf.currentTerm {
+		if enable_incrementing_output {
+			fmt.Println("Server", rf.me, "AppendEntries(): Increamenting current term from", rf.currentTerm, "to", args.Term)
+		}
 		// whenever set currentTerm, clear voteFor
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
@@ -593,7 +594,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 			if args.PrevLogIndex > rf.getLastLogIndex() || rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {
 				// 2. Reply false if log doesn’t contain an entry at prevLogIndex
 				// whose term matches prevLogTerm (§5.3)
-				fmt.Println("Server",rf.me,"AppendEntries: Case 2 false")
+				if enable_debug_lab_2b {
+					fmt.Println("Server", rf.me, "AppendEntries: Case 2 false")
+				}
 				reply.Success = false
 				reply.Error = ErrorType_AppendEntries_NO_LOG_WITH_RIGHT_TERM
 			} else {
@@ -609,21 +612,25 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				for i := 0; i < n; i++ {
 					if (rf.existLogIndex(args.PrevLogIndex+1+i)) { // if there is an existing entry there
 						if rf.getLogTerm(args.PrevLogIndex+1+i) != args.Entries[i].LogTerm {// if conflicts
-							fmt.Println("Server",rf.me,"AppendEntries(): conflicting log detected.")
+
+							if enable_debug_lab_2b {
+								fmt.Println("Server", rf.me, "AppendEntries(): conflicting log detected.")
+							}
+
 							rf.deleteLogSince(args.PrevLogIndex+1+i)
 
-							if args.Entries[i].Command == rf.getLog(rf.getLastLogIndex()).Command {
-								fmt.Println("Debug point4")
-							}
 
 							rf.log = append(rf.log, args.Entries[i])
 
-							for i:=0; i<len(args.Entries); i++ {
-								fmt.Println("Entry appended", args.Entries[i])
-							}
-							fmt.Println("Current log:")
-							for i:=0; i<len(rf.log); i++ {
-								fmt.Println(rf.log[i])
+
+							if enable_debug_lab_2b {
+								for i := 0; i < len(args.Entries); i++ {
+									fmt.Println("Entry appended", args.Entries[i])
+								}
+								fmt.Println("Current log:")
+								for i := 0; i < len(rf.log); i++ {
+									fmt.Println(rf.log[i])
+								}
 							}
 
 
@@ -639,19 +646,23 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							fmt.Println("Server",rf.me,"  incoming log:",args.Entries[i])
 						}
 					} else {
-						fmt.Println("Server",rf.me,"AppendEntries(): appending log index=",args.PrevLogIndex+1+i,"command",args.Entries[i].Command,".")
-						if args.Entries[i].Command == rf.getLog(rf.getLastLogIndex()).Command {
-							fmt.Println("Debug point5")
+						if enable_debug_lab_2b {
+							fmt.Println("Server", rf.me, "AppendEntries(): appending log index=", args.PrevLogIndex+1+i, "command", args.Entries[i].Command, ".")
+							if args.Entries[i].Command == rf.getLog(rf.getLastLogIndex()).Command {
+								fmt.Println("Debug point5")
+							}
 						}
 
 						rf.log = append(rf.log, args.Entries[i])
 
-						for i:=0; i<len(args.Entries); i++ {
-							fmt.Println("Entry appended", args.Entries[i])
-						}
-						fmt.Println("Current log:")
-						for i:=0; i<len(rf.log); i++ {
-							fmt.Println(rf.log[i])
+						if enable_debug_lab_2b {
+							for i := 0; i < len(args.Entries); i++ {
+								fmt.Println("Entry appended", args.Entries[i])
+							}
+							fmt.Println("Current log:")
+							for i := 0; i < len(rf.log); i++ {
+								fmt.Println(rf.log[i])
+							}
 						}
 					}
 				}
@@ -675,10 +686,15 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 					for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
 						msg := ApplyMsg{i>0, rf.getLog(i).Command, i}
 						msgs = append(msgs, msg)
-						fmt.Println("Server",rf.me, "committed entry", msg)
-						if msg.Command==102 {
-							fmt.Println("Debug point")
+
+
+						if enable_debug_lab_2b {
+							fmt.Println("Server", rf.me, "committed entry", msg)
+							if msg.Command == 102 {
+								fmt.Println("Debug point")
+							}
 						}
+
 						rf.applyStack = append(rf.applyStack, msg)
 					}
 
@@ -788,9 +804,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			entry := LogEntry{rf.currentTerm,command}
 			rf.log = append(rf.log, entry)
 
-			fmt.Println("Server",rf.me,"Start(): rf.log size is:",len(rf.log))
-			fmt.Println("new log entry: ",entry)
-
+			if enable_debug_lab_2b {
+				fmt.Println("Server", rf.me, "Start(): rf.log size is:", len(rf.log))
+				fmt.Println("new log entry: ", entry)
+			}
 			// Notify all other servers.
 			for i,_ := range rf.peers {
 				if i!= rf.me {
@@ -849,8 +866,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			// TODO optional: optimize this later
 			rf.mu.Unlock()
 
-			if (args.PrevLogIndex+1)==5 && args.Entries[0].Command==105 {
-				fmt.Println("Debug point2")
+			if enable_debug_lab_2b {
+				if (args.PrevLogIndex+1) == 5 && args.Entries[0].Command == 105 {
+					fmt.Println("Debug point2")
+				}
 			}
 
 			reply := AppendEntriesReply{}
@@ -863,10 +882,13 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 				if ok {
 					if reply.Success {
-						fmt.Println("Leader",rf.me,"succeeded to append entries [",args.PrevLogIndex+1,
-							",",args.PrevLogIndex+1+len(entries),") to server", serverIndex, ".")
-						for i:=0; i<len(entries); i++ {
-							fmt.Println("Entry",entries[i])
+
+						if enable_debug_lab_2b {
+							fmt.Println("Leader", rf.me, "succeeded to append entries [", args.PrevLogIndex+1,
+								",", args.PrevLogIndex+1+len(entries), ") to server", serverIndex, ".")
+							for i := 0; i < len(entries); i++ {
+								fmt.Println("Entry", entries[i])
+							}
 						}
 
 						rf.nextIndex[serverIndex] += len(entries)
@@ -883,7 +905,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_RIGHT_TERM {
 
 							// Retreat
-							fmt.Println("Leader",rf.me,"failed to append entries",args.PrevLogIndex+1,"to server", serverIndex, ".")
+							if enable_debug_lab_2b {
+								fmt.Println("Leader", rf.me, "failed to append entries", args.PrevLogIndex+1, "to server", serverIndex, ".")
+							}
 							rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 							// TODO optional: decrease more than 1 as suggested in the lecture
 						} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
@@ -896,6 +920,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							// TODO optional: consider make this a checkTermNoLessThan fun
 							if rf.currentTerm < reply.Term {
 								termNoLessThan = false
+								if enable_incrementing_output {
+									fmt.Println("Server", rf.me, "trySendAppendEntriesRecursively(): Increamenting current term from", rf.currentTerm, "to", args.Term)
+								}
 								rf.currentTerm = reply.Term
 								rf.votedFor = -1
 								switch rf.serverState {
@@ -910,14 +937,18 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								break
 							}
 						} else {
-							fmt.Println("ERROR: not implemented!!!!!!!!!!!!!!!!")
+							if enable_debug_lab_2b {
+								fmt.Println("ERROR: not implemented!!!!!!!!!!!!!!!!")
+							}
 							break
 						}
 
 
 					}
 				} else {
-					fmt.Println("Leader",rf.me,"failed to call Raft.AppendEntries",args.PrevLogIndex+1,"to server", serverIndex, ".")
+					if enable_debug_lab_2b {
+						fmt.Println("Leader", rf.me, "failed to call Raft.AppendEntries", args.PrevLogIndex+1, "to server", serverIndex, ".")
+					}
 					break// important to break here.
 				}
 			} else {
@@ -1001,13 +1032,16 @@ func (rf *Raft) stateFollowerToCandidate() {
 
 	rf.serverState = SERVER_STATE_CANDIDATE
 
+	if enable_incrementing_output {
+		fmt.Println("Server", rf.me, "stateFollowerToCandidate(): Increamenting current term from", rf.currentTerm, "by 1")
+	}
 	// whenever set currentTerm, clear voteFor
 	rf.currentTerm = rf.currentTerm + 1
 	rf.votedFor = -1
 
 	termWhenInit := rf.currentTerm
 	rf.votedFor = rf.me
-	go rf.startElection(termWhenInit)
+	go rf.startElection(termWhenInit, time.Duration(1*time.Millisecond))
 }
 
 func (rf *Raft) stateCandidateToCandidate() {
@@ -1028,13 +1062,16 @@ func (rf *Raft) stateCandidateToCandidate() {
 
 	rf.serverState = SERVER_STATE_CANDIDATE
 
+	if enable_incrementing_output {
+		fmt.Println("Server", rf.me, "stateCandidateToCandidate(): Increamenting current term from", rf.currentTerm, "by 1")
+	}
 	// whenever set currentTerm, clear voteFor
 	rf.currentTerm = rf.currentTerm + 1
 	rf.votedFor = -1
 
 	termWhenInit := rf.currentTerm
 	rf.votedFor = rf.me
-	go rf.startElection(termWhenInit)
+	go rf.startElection(termWhenInit, randTimeBetween(2, 50)) // this is necessary to avoid cycle of competing
 }
 
 func (rf *Raft) stateCandidateToLeader() {
@@ -1067,9 +1104,11 @@ func (rf *Raft) stateCandidateToLeader() {
 
 	}
 
-	fmt.Println("New leader elected:", rf.me,"for term", rf.currentTerm)
-	for i:=0; i<len(rf.log); i++ {
-		fmt.Println("  log:", rf.log[i])
+	if enable_debug_lab_2b {
+		fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm)
+		for i := 0; i < len(rf.log); i++ {
+			fmt.Println("  log:", rf.log[i])
+		}
 	}
 }
 
@@ -1290,7 +1329,9 @@ func (rf *Raft) initHeartbeatSender(){
 
 }
 
-func (rf *Raft) startElection(termWhenInit int) {
+func (rf *Raft) startElection(termWhenInit int, waitPeriod time.Duration) {
+
+	time.Sleep(waitPeriod)
 
 	// should not use lock in this goroutine except protecting the state transition
 	// in the end. Though it seems ok to use lock, but there is no need.
@@ -1418,19 +1459,19 @@ func (rf *Raft) startCommitChecker() {
 		<- rf.commitCheckerTriggerChan
 
 
-		fmt.Println("startCommitChecker() step 0")
+		// fmt.Println("startCommitChecker() step 0")
 
 		for i:= 0; i<len(rf.peers); i++ {
 			//rf.peerBeingAppend[i].Lock()
 		}
 
-		fmt.Println("startCommitChecker() step 1")
+		// fmt.Println("startCommitChecker() step 1")
 
 		// lock between rf.peerBeingAppend[i].Lock()/Unlock()
 		// otherwise it may deadlock
 		rf.mu.Lock()
 
-		fmt.Println("startCommitChecker() step 2")
+		// fmt.Println("startCommitChecker() step 2")
 
 		if rf.serverState==SERVER_STATE_LEADER {
 
@@ -1456,8 +1497,11 @@ func (rf *Raft) startCommitChecker() {
 				}
 			}
 			if N > rf.commitIndex {
-				fmt.Println("Leader", rf.me, "committed index: ", N, "")
 
+				if enable_debug_lab_2b {
+					fmt.Println("Leader", rf.me, "committed index: ", N, "")
+				}
+				
 				// other server will figure out this later from RPC calls
 
 
