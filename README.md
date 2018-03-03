@@ -33,4 +33,4 @@ to save username and password.
 
 `export "GOPATH=$PWD`
 
-'cd ./src/raft'
+`cd ./src/raft`
