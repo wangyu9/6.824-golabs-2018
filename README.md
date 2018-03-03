@@ -32,3 +32,5 @@ to save username and password.
 `cd 6.824-golabs-2018`
 
 `export "GOPATH=$PWD`
+
+'cd ./src/raft'
