@@ -1501,7 +1501,7 @@ func (rf *Raft) startCommitChecker() {
 				if enable_debug_lab_2b {
 					fmt.Println("Leader", rf.me, "committed index: ", N, "")
 				}
-				
+
 				// other server will figure out this later from RPC calls
 
 
