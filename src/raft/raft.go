@@ -30,6 +30,8 @@ import (
 	"time"
 	"log"
 	"math/rand"
+	"bytes"
+	"labgob"
 )
 
 
@@ -49,7 +51,7 @@ const ElectionTimeoutUpper = 500//700//400
 const verbose = 0
 
 const enable_lab_2b = true // must be true in final submission
-
+const enable_lab_2c = true
 
 
 const enable_incrementing_output = false
@@ -95,7 +97,8 @@ type ErrorTypeAppendEntries int
 const (  // iota is reset to 0
 	//	SERVER_STATE_BASE ServerState = iota
 	ErrorType_AppendEntries_DEFAULT ErrorTypeAppendEntries = iota  //  == 0
-	ErrorType_AppendEntries_NO_LOG_WITH_RIGHT_TERM ErrorTypeAppendEntries = iota  //  == 1
+	ErrorType_AppendEntries_NO_LOG_WITH_INDEX ErrorTypeAppendEntries = iota
+	ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ErrorTypeAppendEntries = iota
 	ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM = iota  //  == 2
 )
 
@@ -316,6 +319,16 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	if enable_lab_2c {
+		w := new(bytes.Buffer)
+		e := labgob.NewEncoder(w)
+		e.Encode(rf.currentTerm)
+		e.Encode(rf.votedFor)
+		e.Encode(rf.log)
+		data := w.Bytes()
+		rf.persister.SaveRaftState(data)
+	}
 }
 
 
@@ -339,6 +352,39 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	// The labgob encoder you'll use to encode persistent state only
+	// saves fields whose names start with upper case letters. Using
+	// small caps for field names is a common source of mysterious bugs.
+
+	if enable_lab_2c {
+		r := bytes.NewBuffer(data)
+		d := labgob.NewDecoder(r)
+
+		var currentTerm int
+		var votedFor int
+		var log [] LogEntry
+
+
+		if d.Decode(&currentTerm) != nil ||
+			d.Decode(&votedFor) != nil ||
+				d.Decode(&log) != nil {
+				//fmt.Println("readPersist() fails.")
+		} else {
+			rf.currentTerm = currentTerm
+			rf.votedFor = votedFor
+			rf.log = log
+			//fmt.Println("readPersist() succeeds.")
+
+			//fmt.Println("currentTerm:", rf.currentTerm)
+			//fmt.Println("votedFor:", rf.votedFor)
+			//fmt.Println("log:")
+			//for i := 0; i < len(rf.log); i++ {
+			//	fmt.Println(rf.log[i])
+			//}
+		}
+
+	}
 }
 
 
@@ -442,6 +488,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		if enable_lab_2c {
+			rf.persist()
+		}
 		switch rf.serverState {
 		case SERVER_STATE_FOLLOWER:
 			// do nothing
@@ -522,6 +571,13 @@ type AppendEntriesReply struct {
 	// If Success==false, return the additional information
 	Error ErrorTypeAppendEntries
 	// useful only if Success==false
+
+	ConflictTerm int
+	FirstIndexOfConflictTerm int
+	// used only if Error==ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
+
+	LastLogIndex int
+	// used only if Error==ErrorType_AppendEntries_NO_LOG_WITH_INDEX
 }
 
 func min(a, b int) int {
@@ -572,6 +628,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		// whenever set currentTerm, clear voteFor
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		if enable_lab_2c {
+			rf.persist()
+		}
 
 		if rf.serverState == SERVER_STATE_LEADER {
 			//rf.eventsChan <- EVENT_DISCOVER_HIGHER_TERM_SERVER
@@ -605,7 +664,27 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 					fmt.Println("Server", rf.me, "AppendEntries: Case 2 false")
 				}
 				reply.Success = false
-				reply.Error = ErrorType_AppendEntries_NO_LOG_WITH_RIGHT_TERM
+
+				if args.PrevLogIndex <= rf.getLastLogIndex() {
+					reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
+					reply.ConflictTerm = rf.getLogTerm(args.PrevLogIndex)
+					firstIndex := args.PrevLogIndex
+					for index:= firstIndex; index>=1; index-- {
+						if rf.getLogTerm(index) < reply.ConflictTerm {
+							break
+						}
+						if rf.getLogTerm(index) == reply.ConflictTerm {
+							firstIndex = index
+						}
+					}
+					reply.FirstIndexOfConflictTerm = firstIndex
+				} else {
+					// no such index, let alone its term
+					reply.Error = ErrorType_AppendEntries_NO_LOG_WITH_INDEX
+					reply.LastLogIndex = rf.getLastLogIndex()
+				}
+
+
 			} else {
 				reply.Success = true
 				// so it will not trigger a retreat to recursively appendentries at the leader side
@@ -625,9 +704,10 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							}
 
 							rf.deleteLogSince(args.PrevLogIndex+1+i)
-
-
 							rf.log = append(rf.log, args.Entries[i])
+							if enable_lab_2c {
+								rf.persist()
+							}
 
 
 							if enable_debug_lab_2b {
@@ -648,9 +728,10 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							// if there is an existing entry there (same index and same term), the existing entry must be
 							// identical to the one in Entries, as guaranteed by the Leader Append-only Property and that
 							// one term has at most one leader.
-							fmt.Println("Server",rf.me,"AppendEntries(): no need to append entries)" )
-							fmt.Println("Server",rf.me,"  existing log:",rf.getLog(args.PrevLogIndex+1+i))
-							fmt.Println("Server",rf.me,"  incoming log:",args.Entries[i])
+
+							//fmt.Println("Server",rf.me,"AppendEntries(): no need to append entries)" )
+							//fmt.Println("Server",rf.me,"  existing log:",rf.getLog(args.PrevLogIndex+1+i))
+							//fmt.Println("Server",rf.me,"  incoming log:",args.Entries[i])
 						}
 					} else {
 						if enable_debug_lab_2b {
@@ -661,6 +742,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						}
 
 						rf.log = append(rf.log, args.Entries[i])
+						if enable_lab_2c {
+							rf.persist()
+						}
 
 						if enable_debug_lab_2b {
 							for i := 0; i < len(args.Entries); i++ {
@@ -697,9 +781,6 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 						if enable_debug_lab_2b {
 							fmt.Println("Server", rf.me, "committed entry", msg)
-							if msg.Command == 102 {
-								fmt.Println("Debug point")
-							}
 						}
 
 						rf.applyStack = append(rf.applyStack, msg)
@@ -810,6 +891,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			index = rf.getLastLogIndex() + 1
 			entry := LogEntry{rf.currentTerm,command}
 			rf.log = append(rf.log, entry)
+			if enable_lab_2c {
+				rf.persist()
+			}
 
 			if enable_debug_lab_2b {
 				fmt.Println("Server", rf.me, "Start(): rf.log size is:", len(rf.log))
@@ -903,7 +987,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						rf.nextIndex[serverIndex] += len(entries)
 						rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 
-						// TODO: try to commit entries if possible
+						// try to commit entries if possible
 						go func() {
 							rf.commitCheckerTriggerChan <- true
 						}()
@@ -911,14 +995,50 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						break
 					} else {
 
-						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_RIGHT_TERM {
+						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX ||
+							reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
 
 							// Retreat
 							if enable_debug_lab_2b {
 								fmt.Println("Leader", rf.me, "failed to append entries", args.PrevLogIndex+1, "to server", serverIndex, ".")
 							}
-							rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
-							// TODO optional: decrease more than 1 as suggested in the lecture
+
+
+							if false {
+								// This is my original implementation of pass lab2b,
+								// retreating by 1.
+								rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
+							} else {
+
+								if reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
+									// Retreat more than 1 as suggested in the lecture
+									nI:=rf.nextIndex[serverIndex]-1
+									for ; nI>=1; nI-- {
+										if rf.getLogTerm(nI) == reply.ConflictTerm {
+											// no need to retreat more
+											rf.nextIndex[serverIndex] = nI
+											break
+										}
+										if rf.getLogTerm(nI) < reply.ConflictTerm {
+											// leader does not have entries with conflicting term
+											rf.nextIndex[serverIndex] = reply.FirstIndexOfConflictTerm
+											break
+										}
+									}
+									if nI==0 {
+										// it also means leader does not have entries with conflicting term
+										// but we can be more aggresive since all rf.nextIndex > reply.ConflictTerm
+										rf.nextIndex[serverIndex] = 1 //reply.FirstIndexOfConflictTerm
+									}
+									if rf.nextIndex[serverIndex] == 0{
+										fmt.Println("Error: this should never happen")
+									}
+								} else { // reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX
+									rf.nextIndex[serverIndex] = reply.LastLogIndex + 1
+								}
+
+
+							}
 						} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
 
 							// This is actual *not* optional and missing this part leads to deadlock.
@@ -934,6 +1054,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								}
 								rf.currentTerm = reply.Term
 								rf.votedFor = -1
+								if enable_lab_2c {
+									rf.persist()
+								}
 								switch rf.serverState {
 								case SERVER_STATE_FOLLOWER:
 								case SERVER_STATE_CANDIDATE:
@@ -1051,9 +1174,15 @@ func (rf *Raft) stateFollowerToCandidate() {
 	// whenever set currentTerm, clear voteFor
 	rf.currentTerm = rf.currentTerm + 1
 	rf.votedFor = -1
+	if enable_lab_2c {
+		rf.persist()
+	}
 
 	termWhenInit := rf.currentTerm
 	rf.votedFor = rf.me
+	if enable_lab_2c {
+		rf.persist()
+	}
 	go rf.startElection(termWhenInit, time.Duration(1*time.Millisecond))
 }
 
@@ -1081,9 +1210,15 @@ func (rf *Raft) stateCandidateToCandidate() {
 	// whenever set currentTerm, clear voteFor
 	rf.currentTerm = rf.currentTerm + 1
 	rf.votedFor = -1
+	if enable_lab_2c {
+		rf.persist()
+	}
 
 	termWhenInit := rf.currentTerm
 	rf.votedFor = rf.me
+	if enable_lab_2c {
+		rf.persist()
+	}
 	go rf.startElection(termWhenInit, randTimeBetween(2, 50)) // this is necessary to avoid cycle of competing
 }
 
@@ -1118,7 +1253,7 @@ func (rf *Raft) stateCandidateToLeader() {
 	}
 
 	if enable_debug_lab_2b {
-		fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm)
+		fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm, "with log")
 		for i := 0; i < len(rf.log); i++ {
 			fmt.Println("  log:", rf.log[i])
 		}
@@ -1279,7 +1414,78 @@ func (rf *Raft) initHeartbeatSender(){
 	}
 */
 
+	for i,_ := range rf.peers {
+		//if i != rf.me {
+		if true {
+			go func(rf *Raft, index int) {
+				for {
+					select {
+					case <- rf.heartbeatsSendChan[index]:
+					case <- time.After( (HeartbeatSendPeriod * time.Millisecond) ):
+						rf.mu.Lock()
+						term := rf.currentTerm
+						rf.mu.Unlock()
+						go rf.trySendAppendEntriesRecursively(index, term) // i is sent in.
+						go func(index int) {
 
+							rf.mu.Lock()
+							term := rf.currentTerm
+							state := rf.serverState
+							// TODO: for heartbeat try not to use these on the receiver side.
+							prevLogIndex := rf.getLastLogIndex() //TODO: this is clearly a bug
+							// prevLogIndex := rf.getLastLogIndex()
+							prevLogTerm := rf.getLastLogTerm()
+							leaderCommit := rf.commitIndex
+							rf.mu.Unlock()
+
+							// no need to lock the following, since goroutines and RPCs incur delay anyway.
+
+							if state == SERVER_STATE_LEADER {
+								// Only leader sends heartbeat signal
+
+								// args := AppendEntriesArgs{term, rf.me}
+								args := AppendEntriesArgs{term, rf.me, prevLogIndex, prevLogTerm, make([]LogEntry, 0), leaderCommit}
+
+								// Put this in a go routine, which is optional.
+								// So the delay in RPC is also considered as part of the network delay
+
+								go func(args AppendEntriesArgs) {
+
+									reply := AppendEntriesReply{}
+									// non default values like {-1, false} leads to
+									// labgob warning: Decoding into a non-default variable/field Term may not work
+									// https://piazza.com/class/j9xqo2fm55k1cy?cid=75
+
+									//fmt.Println("Server ", rf.me, "tries to send heartbeat msg to server ",index,".")
+
+									ok := rf.peers[index].Call("Raft.AppendEntries", &args, &reply)
+
+									if ok {
+										if verbose >= 2 {
+											fmt.Println("Server ", rf.me, "successfully sends heartbeat msg to server ", index, ".")
+										}
+										if reply.Success {
+											// not really need to use the reply value
+											// TODO optional: check reply.Term
+										}
+									} else {
+										if verbose >= 2 {
+											fmt.Println("Server ", rf.me, "fails to send heartbeat msg to server ", index, ".")
+										}
+									}
+
+								}(args)
+
+							}
+
+						}(index) // i must be sent in.
+					}
+				}
+			}(rf, i)
+		}
+	}
+
+/*
 	for i,_ := range rf.peers {
 		//if i != rf.me {
 		if true {
@@ -1346,7 +1552,7 @@ func (rf *Raft) initHeartbeatSender(){
 			}(rf, i)
 		}
 	}
-
+*/
 
 /*
 	for i,p := range rf.peers {
