@@ -915,6 +915,30 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 
+func (rf *Raft) checkTermNoLessThan(term int) (bool) {
+	termNoLessThan := true
+	// TODO optional: consider make this a checkTermNoLessThan fun
+	if rf.currentTerm < term {
+		termNoLessThan = false
+		if enable_incrementing_output {
+		//	fmt.Println("Server", rf.me, "trySendAppendEntriesRecursively(): Increamenting current term from", rf.currentTerm, "to", args.Term)
+		}
+		rf.currentTerm = term
+		rf.votedFor = -1
+		if enable_lab_2c {
+			rf.persist()
+		}
+		switch rf.serverState {
+		case SERVER_STATE_FOLLOWER:
+		case SERVER_STATE_CANDIDATE:
+			rf.stateCandidateToFollower()
+		case SERVER_STATE_LEADER:
+			rf.stateLeaderToFollower()
+		}
+	}
+	return termNoLessThan
+}
+
 // used if enable_lab_2b
 func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted int){
 
@@ -924,14 +948,16 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	rf.peerBeingAppend[serverIndex].Lock()
 	// make sure at most one tryAppendEntriesRecursively running for the serverIndex-th server
 
-	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
-
 	// entries := make( [] LogEntry, 0)
 
 	// Lock is used in a rather unique way:
 	// everything is protected except the RPC call.
 
 	rf.mu.Lock()
+
+	//if rf.serverState == SERVER_STATE_LEADER {
+	//	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
+	//}
 
 	for {
 
@@ -1045,27 +1071,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							// Especially, for TestFailAgree2B, an offline server becoming back online needs to
 							// use this to force the leader quit, and re-elect later.
 
-							termNoLessThan := true
-							// TODO optional: consider make this a checkTermNoLessThan fun
-							if rf.currentTerm < reply.Term {
-								termNoLessThan = false
-								if enable_incrementing_output {
-									fmt.Println("Server", rf.me, "trySendAppendEntriesRecursively(): Increamenting current term from", rf.currentTerm, "to", args.Term)
-								}
-								rf.currentTerm = reply.Term
-								rf.votedFor = -1
-								if enable_lab_2c {
-									rf.persist()
-								}
-								switch rf.serverState {
-								case SERVER_STATE_FOLLOWER:
-								case SERVER_STATE_CANDIDATE:
-									rf.stateCandidateToFollower()
-								case SERVER_STATE_LEADER:
-									rf.stateLeaderToFollower()
-								}
-							}
-							if !termNoLessThan {
+							if !rf.checkTermNoLessThan(reply.Term) {
 								break
 							}
 						} else {
@@ -1415,17 +1421,18 @@ func (rf *Raft) initHeartbeatSender(){
 */
 
 	for i,_ := range rf.peers {
-		//if i != rf.me {
-		if true {
+		if i != rf.me {
+		//if true {
 			go func(rf *Raft, index int) {
 				for {
 					select {
 					case <- rf.heartbeatsSendChan[index]:
 					case <- time.After( (HeartbeatSendPeriod * time.Millisecond) ):
-						rf.mu.Lock()
-						term := rf.currentTerm
-						rf.mu.Unlock()
-						go rf.trySendAppendEntriesRecursively(index, term) // i is sent in.
+						//rf.mu.Lock()
+						//term := rf.currentTerm
+						//rf.mu.Unlock()
+						// go rf.trySendAppendEntriesRecursively(index, term) // i is sent in.
+						if true {
 						go func(index int) {
 
 							rf.mu.Lock()
@@ -1433,8 +1440,11 @@ func (rf *Raft) initHeartbeatSender(){
 							state := rf.serverState
 							// TODO: for heartbeat try not to use these on the receiver side.
 							prevLogIndex := rf.getLastLogIndex() //TODO: this is clearly a bug
-							// prevLogIndex := rf.getLastLogIndex()
 							prevLogTerm := rf.getLastLogTerm()
+							//fmt.Println("index:", index)
+							//prevLogIndex := rf.nextIndex[index]-1
+							//prevLogTerm := rf.getLogTerm(prevLogIndex)
+
 							leaderCommit := rf.commitIndex
 							rf.mu.Unlock()
 
@@ -1466,7 +1476,23 @@ func (rf *Raft) initHeartbeatSender(){
 										}
 										if reply.Success {
 											// not really need to use the reply value
-											// TODO optional: check reply.Term
+										} else {
+
+
+											if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX ||
+												reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
+												rf.mu.Lock()
+												term := rf.currentTerm
+												rf.mu.Unlock()
+												go rf.trySendAppendEntriesRecursively(index, term)
+											} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
+												rf.checkTermNoLessThan(reply.Term)
+											} else {
+												if enable_debug_lab_2b {
+													fmt.Println("ERROR: not implemented!!!!!!!!!!!!!!!!")
+												}
+											}
+
 										}
 									} else {
 										if verbose >= 2 {
@@ -1479,6 +1505,7 @@ func (rf *Raft) initHeartbeatSender(){
 							}
 
 						}(index) // i must be sent in.
+						}
 					}
 				}
 			}(rf, i)
@@ -1885,6 +1912,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.heartbeatsChan = make( chan bool, 200)
 
 	if enable_lab_2b {
+		rf.nextIndex = make([]int, len(rf.peers))
+		rf.matchIndex = make([]int, len(rf.peers))
 		rf.log = make([] LogEntry, 0)
 		rf.log = append(rf.log, LogEntry{}) // Place holder
 		rf.applyStack = make([] ApplyMsg, 0)
