@@ -42,10 +42,10 @@ import (
 // Unit: millisecond.
 const HeartbeatSendPeriod = 100//100
 
-const HeartbeatTimeoutLower = 200//250
-const ElectionTimeoutLower = 200//250
-const HeartbeatTimeoutUpper = 500//700//400
-const ElectionTimeoutUpper = 500//700//400
+const HeartbeatTimeoutLower = 250//250
+const ElectionTimeoutLower = 250//250
+const HeartbeatTimeoutUpper = 400//700//400
+const ElectionTimeoutUpper = 400//700//400
 // wangyu: some design parameters:
 
 const verbose = 0
@@ -474,6 +474,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	needPersist := false
+	defer func() {
+		if needPersist {
+			rf.persist()
+		}
+	}()
+
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm {
@@ -489,7 +496,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		if enable_lab_2c {
-			rf.persist()
+			needPersist = true
 		}
 		switch rf.serverState {
 		case SERVER_STATE_FOLLOWER:
@@ -533,6 +540,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = true
 
 	rf.votedFor = args.CandidateID
+	if enable_lab_2c {
+		needPersist = true
+	}
 
 }
 
@@ -598,10 +608,17 @@ func max(a, b int) int {
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
 
+	needPersist := false
+	defer func() {
+		if needPersist {
+			rf.persist()
+		}
+	}()
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
@@ -611,7 +628,6 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		}
 		reply.Error = ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM
 		reply.Success = false
-		rf.mu.Unlock() // careful about the lock before return
 		return
 	}
 
@@ -629,7 +645,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		if enable_lab_2c {
-			rf.persist()
+			needPersist = true
 		}
 
 		if rf.serverState == SERVER_STATE_LEADER {
@@ -706,7 +722,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							rf.deleteLogSince(args.PrevLogIndex+1+i)
 							rf.log = append(rf.log, args.Entries[i])
 							if enable_lab_2c {
-								rf.persist()
+								needPersist = true
 							}
 
 
@@ -743,7 +759,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 						rf.log = append(rf.log, args.Entries[i])
 						if enable_lab_2c {
-							rf.persist()
+							needPersist = true
 						}
 
 						if enable_debug_lab_2b {
@@ -758,6 +774,10 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 					}
 				}
 
+				rf.deleteLogSince(args.PrevLogIndex+1+n)
+				// this is important, this ensures no redundant entries behind
+				// so the index_of_last_new_entry used later is correct.
+
 				// 5. If leaderCommit > commitIndex, set commitIndex =
 				// 	min(leaderCommit, index of last new entry)
 				if args.LeaderCommit > rf.commitIndex {
@@ -765,7 +785,8 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 					oldCommitIndex := rf.commitIndex
 
 					index_of_last_new_entry := rf.getLastLogIndex()
-					// TODO: this is only true for non-heartbeat appendentries that succeed to append (even empty) entries.
+					// this is not only true for non-heartbeat
+					// but also for any appendentries that succeed to append (even empty) entries.
 					// index_of_last_new_entry is pretty hard to get right
 
 					rf.commitIndex = min(args.LeaderCommit, index_of_last_new_entry) // index of last new entry
@@ -817,7 +838,6 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 	// fmt.Println("Server ", rf.me," received heartbeat msg from the leader.")
 
-	rf.mu.Unlock()
 
 }
 
@@ -882,6 +902,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		isLeader = false
 
 		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
+		defer rf.persist()
+
 
 		term = rf.currentTerm
 		isLeader = (rf.serverState == SERVER_STATE_LEADER)
@@ -892,7 +916,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			entry := LogEntry{rf.currentTerm,command}
 			rf.log = append(rf.log, entry)
 			if enable_lab_2c {
-				rf.persist()
+				//always persist//rf.persist()
 			}
 
 			if enable_debug_lab_2b {
@@ -901,14 +925,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			}
 
 			// Notify all other servers.
-			for i,_ := range rf.peers {
-				if i!= rf.me {
-					go rf.trySendAppendEntriesRecursively(i, rf.currentTerm)// i is sent in.
-				}
-			}
+			//for i,_ := range rf.peers {
+			//	if i!= rf.me {
+			//		go rf.trySendAppendEntriesRecursively(i, rf.currentTerm)// i is sent in.
+			//	}
+			//}
+			// do not append until the next heartbeat.
 		}
 
-		rf.mu.Unlock()
+
 	}
 
 	return index, term, isLeader
@@ -925,15 +950,15 @@ func (rf *Raft) checkTermNoLessThan(term int) (bool) {
 		}
 		rf.currentTerm = term
 		rf.votedFor = -1
-		if enable_lab_2c {
-			rf.persist()
-		}
 		switch rf.serverState {
 		case SERVER_STATE_FOLLOWER:
 		case SERVER_STATE_CANDIDATE:
 			rf.stateCandidateToFollower()
 		case SERVER_STATE_LEADER:
 			rf.stateLeaderToFollower()
+		}
+		if enable_lab_2c {
+			rf.persist()
 		}
 	}
 	return termNoLessThan
@@ -956,7 +981,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	rf.mu.Lock()
 
 	//if rf.serverState == SERVER_STATE_LEADER {
-	//	fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
+	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
 	//}
 
 	for {
@@ -1006,7 +1031,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 				if ok {
 					if reply.Success {
 
-						if enable_debug_lab_2b {
+						if verbose >0 || enable_debug_lab_2b {
 							fmt.Println("Leader", rf.me, "succeeded to append entries [", args.PrevLogIndex+1,
 								",", args.PrevLogIndex+1+len(entries), ") to server", serverIndex, ".")
 							for i := 0; i < len(entries); i++ {
@@ -1017,6 +1042,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						rf.nextIndex[serverIndex] += len(entries)
 						rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 
+						if rf.nextIndex[serverIndex] -1 > rf.getLastLogIndex() {
+							fmt.Println("Debug point")
+						}
+
 						// try to commit entries if possible
 						go func() {
 							rf.commitCheckerTriggerChan <- true
@@ -1024,6 +1053,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 						break
 					} else {
+
+						if verbose > 0 {
+							fmt.Println("Leader", rf.me, "failed to append entries to server", serverIndex, ".")
+						}
 
 						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX ||
 							reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
@@ -1067,7 +1100,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 									rf.nextIndex[serverIndex] = reply.LastLogIndex + 1
 								}
 
-
+								if rf.nextIndex[serverIndex] -1 > rf.getLastLogIndex() {
+									fmt.Println("Debug point")
+								}
 							}
 						} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
 
@@ -1088,7 +1123,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 					}
 				} else {
-					if enable_debug_lab_2b {
+					if verbose >0 || enable_debug_lab_2b {
 						fmt.Println("Leader", rf.me, "failed to call Raft.AppendEntries", args.PrevLogIndex+1, "to server", serverIndex, ".")
 					}
 					break// important to break here.
@@ -1183,7 +1218,7 @@ func (rf *Raft) stateFollowerToCandidate() {
 	rf.currentTerm = rf.currentTerm + 1
 	rf.votedFor = -1
 	if enable_lab_2c {
-		rf.persist()
+		// persist later
 	}
 
 	termWhenInit := rf.currentTerm
@@ -1191,7 +1226,7 @@ func (rf *Raft) stateFollowerToCandidate() {
 	if enable_lab_2c {
 		rf.persist()
 	}
-	go rf.startElection(termWhenInit, time.Duration(1*time.Millisecond))
+	go rf.startElection(termWhenInit)
 }
 
 func (rf *Raft) stateCandidateToCandidate() {
@@ -1219,7 +1254,7 @@ func (rf *Raft) stateCandidateToCandidate() {
 	rf.currentTerm = rf.currentTerm + 1
 	rf.votedFor = -1
 	if enable_lab_2c {
-		rf.persist()
+		// persist later //rf.persist()
 	}
 
 	termWhenInit := rf.currentTerm
@@ -1227,7 +1262,7 @@ func (rf *Raft) stateCandidateToCandidate() {
 	if enable_lab_2c {
 		rf.persist()
 	}
-	go rf.startElection(termWhenInit, randTimeBetween(2, 50)) // this is necessary to avoid cycle of competing
+	go rf.startElection(termWhenInit) // this is necessary to avoid cycle of competing
 }
 
 func (rf *Raft) stateCandidateToLeader() {
@@ -1260,10 +1295,20 @@ func (rf *Raft) stateCandidateToLeader() {
 
 	}
 
-	if enable_debug_lab_2b {
+	if verbose>0 || enable_debug_lab_2b {
 		fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm, "with log")
 		for i := 0; i < len(rf.log); i++ {
 			fmt.Println("  log:", rf.log[i])
+		}
+	}
+
+	term := rf.currentTerm
+	// Notify all other servers.
+	for i,_ := range rf.peers {
+		if i!= rf.me {
+			go func(index int){
+				rf.trySendAppendEntriesRecursively(index, term)// i is sent in.
+			} (i)
 		}
 	}
 }
@@ -1405,7 +1450,7 @@ func (rf *Raft) initHeartbeatMonitor() {
 	}(rf)
 }
 
-func (rf *Raft) initHeartbeatSender(){
+func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 
 /*
 	for i,_ := range rf.peers {
@@ -1426,33 +1471,49 @@ func (rf *Raft) initHeartbeatSender(){
 		if i != rf.me {
 		//if true {
 			go func(rf *Raft, index int) {
+
+				//fmt.Println("Server",rf.me,"initHeartbeatSender(): for", index)
 				for {
 					select {
+					//case <- exitChan:
+					//	break
 					case <- rf.heartbeatsSendChan[index]:
 					case <- time.After( (HeartbeatSendPeriod * time.Millisecond) ):
-						//rf.mu.Lock()
-						//term := rf.currentTerm
-						//rf.mu.Unlock()
-						// go rf.trySendAppendEntriesRecursively(index, term) // i is sent in.
-						if true {
+						if false {
+							rf.mu.Lock()
+							term := rf.currentTerm
+							rf.mu.Unlock()
+							go func(serverIndex int) {
+								fmt.Println("Server",rf.me,"initHeartbeatSender(): for", serverIndex)
+								rf.trySendAppendEntriesRecursively(serverIndex, term)
+								// must pass serverIndex in this way, I have been stuck on this bug.
+								}(index)
+						} else {
 						go func(index int) {
 
 							rf.mu.Lock()
 							term := rf.currentTerm
 							state := rf.serverState
-							// TODO: for heartbeat try not to use these on the receiver side.
-							prevLogIndex := rf.getLastLogIndex() //TODO: this is clearly a bug
-							prevLogTerm := rf.getLastLogTerm()
-							//fmt.Println("index:", index)
-							//prevLogIndex := rf.nextIndex[index]-1
-							//prevLogTerm := rf.getLogTerm(prevLogIndex)
-
-							leaderCommit := rf.commitIndex
-							rf.mu.Unlock()
 
 							// no need to lock the following, since goroutines and RPCs incur delay anyway.
 
 							if state == SERVER_STATE_LEADER {
+
+								// TODO: for heartbeat try not to use these on the receiver side.
+								prevLogIndex := rf.getLastLogIndex() //TODO: this is clearly a bug
+								prevLogTerm := rf.getLastLogTerm()
+								//fmt.Println("index:", index)
+								//prevLogIndex := rf.nextIndex[index]-1
+								//prevLogTerm := rf.getLogTerm(prevLogIndex)
+
+								if rf.nextIndex[index] -1 > rf.getLastLogIndex() {
+									fmt.Println("Debug point")
+									// happened when the server is not a leader, so we put it under state == SERVER_STATE_LEADER
+								}
+
+								leaderCommit := rf.commitIndex
+								rf.mu.Unlock()
+
 								// Only leader sends heartbeat signal
 
 								// args := AppendEntriesArgs{term, rf.me}
@@ -1504,6 +1565,8 @@ func (rf *Raft) initHeartbeatSender(){
 
 								}(args)
 
+							} else {
+								rf.mu.Unlock()
 							}
 
 						}(index) // i must be sent in.
@@ -1648,9 +1711,9 @@ func (rf *Raft) initHeartbeatSender(){
 
 }
 
-func (rf *Raft) startElection(termWhenInit int, waitPeriod time.Duration) {
+func (rf *Raft) startElection(termWhenInit int) {
 
-	time.Sleep(waitPeriod)
+	//time.Sleep(waitPeriod)
 
 	// should not use lock in this goroutine except protecting the state transition
 	// in the end. Though it seems ok to use lock, but there is no need.
