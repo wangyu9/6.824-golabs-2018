@@ -372,6 +372,9 @@ func (rf *Raft) readPersist(data []byte) {
 				d.Decode(&log) != nil {
 				//fmt.Println("readPersist() fails.")
 		} else {
+
+			rf.mu.Lock()
+
 			rf.currentTerm = currentTerm
 			rf.votedFor = votedFor
 			rf.log = log
@@ -383,6 +386,9 @@ func (rf *Raft) readPersist(data []byte) {
 			//for i := 0; i < len(rf.log); i++ {
 			//	fmt.Println(rf.log[i])
 			//}
+
+
+			rf.mu.Unlock()
 		}
 
 	}
@@ -1556,7 +1562,9 @@ func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 												rf.mu.Unlock()
 												go rf.trySendAppendEntriesRecursively(index, term)
 											} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
+												rf.mu.Lock()
 												rf.checkTermNoLessThan(reply.Term)
+												rf.mu.Unlock()
 											} else {
 												if enable_debug_lab_2b {
 													fmt.Println("ERROR: not implemented!!!!!!!!!!!!!!!!")
