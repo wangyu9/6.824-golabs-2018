@@ -1148,6 +1148,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			break
 		}
 
+
+
+		time.Sleep(10*time.Millisecond) // limit the speed to send recursively. TODO: make the number better.
+
 	}
 
 
