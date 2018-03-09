@@ -1150,7 +1150,8 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 
 
-		time.Sleep(10*time.Millisecond) // limit the speed to send recursively. TODO: make the number better.
+		// time.Sleep(10*time.Millisecond) // limit the speed to send recursively. TODO: make the number better.
+		// somehow the limit makes  TestFigure8Unreliable2C fails for me.
 
 	}
 
