@@ -994,6 +994,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			reply := AppendEntriesReply{}
 			ok := rf.peers[serverIndex].Call("Raft.AppendEntries", &args, &reply)
 
+			go func() {
+				rf.heartbeatsSendChan[serverIndex] <- true
+			}()
+
 			rf.mu.Lock()
 
 			if rf.currentTerm == termWhenStarted && rf.serverState == SERVER_STATE_LEADER {
@@ -1104,9 +1108,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	rf.mu.Unlock()
 	rf.peerBeingAppend[serverIndex].Unlock()
 
-	//go func() {
-		rf.heartbeatsSendChan[serverIndex] <- true
-	//}()
+
 
 	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 2.")
 
