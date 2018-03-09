@@ -56,6 +56,7 @@ const enable_lab_2c = true
 
 const enable_incrementing_output = false
 const enable_debug_lab_2b = false
+const enable_debug_lab_2c = false
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
@@ -1042,10 +1043,11 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						rf.nextIndex[serverIndex] += len(entries)
 						rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 
-						if rf.nextIndex[serverIndex] -1 > rf.getLastLogIndex() {
-							fmt.Println("Debug point")
+						if enable_debug_lab_2c {
+							if rf.nextIndex[serverIndex]-1 > rf.getLastLogIndex() {
+								fmt.Println("Debug point")
+							}
 						}
-
 						// try to commit entries if possible
 						go func() {
 							rf.commitCheckerTriggerChan <- true
@@ -1093,15 +1095,18 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 										// but we can be more aggresive since all rf.nextIndex > reply.ConflictTerm
 										rf.nextIndex[serverIndex] = 1 //reply.FirstIndexOfConflictTerm
 									}
-									if rf.nextIndex[serverIndex] == 0{
-										fmt.Println("Error: this should never happen")
+									if enable_debug_lab_2c {
+										if rf.nextIndex[serverIndex] == 0 {
+											fmt.Println("Error: this should never happen")
+										}
 									}
 								} else { // reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX
 									rf.nextIndex[serverIndex] = reply.LastLogIndex + 1
 								}
-
-								if rf.nextIndex[serverIndex] -1 > rf.getLastLogIndex() {
-									fmt.Println("Debug point")
+								if enable_debug_lab_2c {
+									if rf.nextIndex[serverIndex]-1 > rf.getLastLogIndex() {
+										fmt.Println("Debug point")
+									}
 								}
 							}
 						} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
@@ -1479,12 +1484,14 @@ func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 					//	break
 					case <- rf.heartbeatsSendChan[index]:
 					case <- time.After( (HeartbeatSendPeriod * time.Millisecond) ):
-						if false {
+						if false { // this does not work to pass 2A ReElect, which I do not understand.
 							rf.mu.Lock()
 							term := rf.currentTerm
 							rf.mu.Unlock()
 							go func(serverIndex int) {
-								fmt.Println("Server",rf.me,"initHeartbeatSender(): for", serverIndex)
+								if enable_debug_lab_2c {
+									fmt.Println("Server", rf.me, "initHeartbeatSender(): for", serverIndex)
+								}
 								rf.trySendAppendEntriesRecursively(serverIndex, term)
 								// must pass serverIndex in this way, I have been stuck on this bug.
 								}(index)
@@ -1500,17 +1507,17 @@ func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 							if state == SERVER_STATE_LEADER {
 
 								// TODO: for heartbeat try not to use these on the receiver side.
-								prevLogIndex := rf.getLastLogIndex() //TODO: this is clearly a bug
+								prevLogIndex := rf.getLastLogIndex() //I have to use this, this is something I do not understand.
 								prevLogTerm := rf.getLastLogTerm()
 								//fmt.Println("index:", index)
-								//prevLogIndex := rf.nextIndex[index]-1
-								//prevLogTerm := rf.getLogTerm(prevLogIndex)
-
-								if rf.nextIndex[index] -1 > rf.getLastLogIndex() {
-									fmt.Println("Debug point")
-									// happened when the server is not a leader, so we put it under state == SERVER_STATE_LEADER
+								//prevLogIndex := rf.nextIndex[index]-1  this does not pass TestFigure8Unreliable2C
+								//prevLogTerm := rf.getLogTerm(prevLogIndex)// for the reason I do not understand
+								if enable_debug_lab_2c {
+									if rf.nextIndex[index]-1 > rf.getLastLogIndex() {
+										fmt.Println("Debug point")
+										// happened when the server is not a leader, so we put it under state == SERVER_STATE_LEADER
+									}
 								}
-
 								leaderCommit := rf.commitIndex
 								rf.mu.Unlock()
 
