@@ -19,6 +19,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const debug_getputappend = false
 
 type OpType int
 
@@ -172,6 +173,10 @@ func (kv *KVServer) getHandler(op *Op, reply *GetReply) {
 }
 
 func (kv *KVServer) putAppendHandler(op *Op, reply *PutAppendReply) {
+	reply.Err = OK
+}
+
+func (kv *KVServer) tryApplyPutAppend(op *Op) {
 
 	// In the face of unreliable connections and server failures,
 	// a Clerk may send an RPC multiple times until it finds a kvserver that replies positively.
@@ -180,8 +185,6 @@ func (kv *KVServer) putAppendHandler(op *Op, reply *PutAppendReply) {
 	// Each call to Clerk.Put() or Clerk.Append() should result in just a single execution,
 	// so you will have to ensure that the re-send doesn't result in the servers executing
 	// the request twice.
-
-
 
 	recentReqID, ok := kv.mostRecentWrite[op.ClientID]
 
@@ -206,18 +209,19 @@ func (kv *KVServer) putAppendHandler(op *Op, reply *PutAppendReply) {
 		default:
 			fmt.Println("Error: putAppendHandler() unrecognized operation type")
 		}
-		reply.Err = OK
 
 		// update the table
 		kv.mostRecentWrite[op.ClientID] = op.RequestID
 
-		fmt.Println("Succeed to PutAppend", op)
+		if debug_getputappend {
+			fmt.Println("Succeed to PutAppend", op)
+		}
 
 	} else {
 		// the op is duplicated, but still reply ok
-		reply.Err = OK
-
-		fmt.Println("Duplicated to PutAppend", op)
+		if debug_getputappend {
+			fmt.Println("Duplicated to PutAppend", op)
+		}
 	}
 
 }
@@ -349,14 +353,21 @@ func (kv *KVServer) ApplyMsgListener() {
 		//case OP_TYPE_GET:
 		default: // these three cases are handled in the same way.
 			kv.mu.Lock()
-			ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
-			if ok {
-				ch <- op
-			} else {
-				// otherwise the chan has been deleted due to timeout
-				// Do nothing.
+			if op.Type!=OP_TYPE_GET {
+				kv.tryApplyPutAppend(&op)
 			}
-			kv.mu.Unlock()
+
+			ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
+			kv.mu.Unlock() // avoid deadlock
+			go func() {
+				// somehow need this to pass 3a linearizability.
+				if ok {
+					ch <- op
+				} else {
+					// otherwise the chan has been deleted due to timeout
+					// Do nothing.
+				}
+			}()
 		}
 
 	}

@@ -7,6 +7,7 @@ import (
 	"sync"
 	//"time"
 	"fmt"
+	"time"
 )
 
 type ClientIndexType int
@@ -38,7 +39,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 
 	ck.clientID = ClientIndexType(int(nrand())) // assigned a random number and *hope* there is no conflict... ideally this should be assigned by the kvserver...
 
-	fmt.Println("Client", ck.clientID, "initialized")
+	//fmt.Println("Client", ck.clientID, "initialized")
 
 	ck.cachedLeader = 0 // set a random initial cacheLeader
 
@@ -116,6 +117,7 @@ func (ck *Clerk) Get(key string) string {
 
 		// TODO: sleep some time.
 		// TODO: give up after certain number of trails.
+		time.Sleep(100*time.Millisecond)
 	}
 
 
@@ -189,7 +191,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 		// TODO: sleep some time.
 		// TODO: give up after certain number of trails.
-		//time.Sleep(100*time.Millisecond)
+		time.Sleep(100*time.Millisecond)
 	}
 
 }
