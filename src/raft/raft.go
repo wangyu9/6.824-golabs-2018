@@ -883,6 +883,16 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 
+// wangyu:
+// Used only for Lab3 and later.
+func (rf *Raft) GetCurrentTerm() int {
+	term := -1
+	rf.mu.Lock()
+	term = rf.currentTerm
+	rf.mu.Unlock()
+	return term
+}
+
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this

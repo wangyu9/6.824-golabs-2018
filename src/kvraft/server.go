@@ -6,6 +6,8 @@ import (
 	"log"
 	"raft"
 	"sync"
+	"fmt"
+	"time"
 )
 
 const Debug = 0
@@ -18,10 +20,27 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 
+type OpType int
+
+const (  // iota is reset to 0
+	OP_TYPE_DEFAULT OpType = iota  //  == 0
+	OP_TYPE_PUT OpType = iota  //  == 1
+	OP_TYPE_APPEND OpType = iota  //  == 2
+	OP_TYPE_GET OpType = iota  //  == 3
+)
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	Type OpType
+
+	ClientID	ClientIndexType
+	RequestID	RequestIndexType
+
+	Key		interface{}
+	Value	interface{}
 }
 
 type KVServer struct {
@@ -33,15 +52,268 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+
+	database	map[string] string
+
+	pendingOps	map[ClientIndexType] map[RequestIndexType] chan Op
+	mostRecentWrite map[ClientIndexType] RequestIndexType
+	// the most recent put or append from each client
 }
+
+
+func (kv *KVServer) insertToPendingOps(cid ClientIndexType, rid RequestIndexType, value chan Op) {
+	// map[cid][rid] = value
+	if kv.pendingOps[cid]==nil {
+		kv.pendingOps[cid] = make(map[RequestIndexType] chan Op)
+	}
+	kv.pendingOps[cid][rid] = value
+}
+
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+
+
+	opEntry := Op{}
+
+	opEntry.Type = OP_TYPE_GET
+	dataHandler := kv.getHandler
+
+	opEntry.Key = args.Key
+	// After this point, the code for PutAppend or Get should be the same.
+
+	kv.mu.Lock()
+	opEntry.ClientID = args.ClientID
+	opEntry.RequestID = args.RequestID
+	kv.mu.Unlock()
+
+	// These handlers should enter an Op in the Raft log using Start();
+	// you should fill in the Op struct definition in server.go so that
+	// it describes a Put/Append/Get operation.
+
+	_, startTerm, isLeader := kv.rf.Start(opEntry)
+
+	if !isLeader {
+
+		reply.WrongLeader = true
+		return
+	}
+
+
+	kv.mu.Lock()
+
+	opChan := make(chan Op, 1)
+
+	kv.insertToPendingOps(args.ClientID, args.RequestID, opChan)
+
+	kv.mu.Unlock()
+
+	// Each server should execute Op commands as Raft commits them,
+	// i.e. as they appear on the applyCh.
+
+	// Wait until the Op is committed by the Raft or timeout.
+	select {
+	case op := <- opChan:
+
+		// Your solution needs to handle the case in which a leader has called Start()
+		// for a Clerk's RPC, but loses its leadership before the request is committed to the log.
+		// In this case you should arrange for the Clerk to re-send the request to other servers
+		// until it finds the new leader.
+
+		// One way to do this is for the server to detect that it has lost leadership, by
+		// noticing that a different request has appeared at the index returned by Start(),
+		// or that Raft's term has changed.
+		endTerm := kv.rf.GetCurrentTerm()
+		if endTerm == startTerm {
+			kv.mu.Lock()
+
+			dataHandler(&op, reply)
+
+			kv.mu.Unlock()
+
+		} else {
+			reply.WrongLeader = true
+			//reply.Err
+		}
+
+		// If the ex-leader is partitioned by itself, it won't know about new leaders;
+		// but any client in the same partition won't be able to talk to a new leader either,
+		// so it's OK in this case for the server and client to wait indefinitely until the
+		// partition heals.
+
+	case <- time.After(800*time.Millisecond):
+		// TODO: timeout to listen from applyChan
+		kv.mu.Lock()
+		close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
+		// delete [cid,rid] from the 2D map
+		delete( kv.pendingOps[args.ClientID], args.RequestID)
+		kv.mu.Unlock()
+		reply.Err = ErrTimeOut
+	}
+
+	// An RPC handler should notice when Raft commits its Op, and then reply to the RPC.
+
+}
+
+func (kv *KVServer) getHandler(op *Op, reply *GetReply) {
+	switch op.Type {
+	case OP_TYPE_GET:
+		value, ok := kv.database[op.Key.(string)]
+		if ok {
+			reply.Err = OK
+			reply.Value = value
+ 		} else {
+ 			reply.Err = ErrNoKey
+		}
+	default:
+		fmt.Println("Error: putAppendHandler() unrecognized operation type")
+	}
+}
+
+func (kv *KVServer) putAppendHandler(op *Op, reply *PutAppendReply) {
+
+	// In the face of unreliable connections and server failures,
+	// a Clerk may send an RPC multiple times until it finds a kvserver that replies positively.
+	// If a leader fails just after committing an entry to the Raft log,
+	// the Clerk may not receive a reply, and thus may re-send the request to another leader.
+	// Each call to Clerk.Put() or Clerk.Append() should result in just a single execution,
+	// so you will have to ensure that the re-send doesn't result in the servers executing
+	// the request twice.
+
+
+
+	recentReqID, ok := kv.mostRecentWrite[op.ClientID]
+
+	if !ok || recentReqID<op.RequestID {
+		// Apply the non-duplicated Op to the database.
+
+		switch op.Type {
+		case OP_TYPE_APPEND:
+			// Append(key, arg) appends arg to key's value, and Get() fetches the current value for a key.
+			// An Append to a non-existant key should act like Put.
+			value, ok := kv.database[op.Key.(string)]
+			if ok {
+				kv.database[op.Key.(string)] = value + op.Value.(string)
+			} else {
+				kv.database[op.Key.(string)] = op.Value.(string)
+			}
+		case OP_TYPE_PUT:
+			// save as above
+			kv.database[op.Key.(string)] = op.Value.(string)
+			// should reply.Err set as ErrNoKey when the key does not exist?
+			// I do not think so.
+		default:
+			fmt.Println("Error: putAppendHandler() unrecognized operation type")
+		}
+		reply.Err = OK
+
+		// update the table
+		kv.mostRecentWrite[op.ClientID] = op.RequestID
+
+		fmt.Println("Succeed to PutAppend", op)
+
+	} else {
+		// the op is duplicated, but still reply ok
+		reply.Err = OK
+
+		fmt.Println("Duplicated to PutAppend", op)
+	}
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+
+
+	opEntry := Op{}
+	if args.Op == "Put" {
+		opEntry.Type = OP_TYPE_PUT
+	} else {
+		// Then args.Op == "Append"
+		opEntry.Type = OP_TYPE_APPEND
+	}
+
+	// TODO: OP_TYPE_GET
+	dataHandler := kv.putAppendHandler
+
+	opEntry.Key = args.Key
+	opEntry.Value = args.Value
+
+	// After this point, the code for PutAppend or Get should be the same.
+
+	kv.mu.Lock()
+	opEntry.ClientID = args.ClientID
+	opEntry.RequestID = args.RequestID
+	kv.mu.Unlock()
+
+	// These handlers should enter an Op in the Raft log using Start();
+	// you should fill in the Op struct definition in server.go so that
+	// it describes a Put/Append/Get operation.
+
+	_, startTerm, isLeader := kv.rf.Start(opEntry)
+
+	if !isLeader {
+
+		reply.WrongLeader = true
+		return
+	}
+
+
+	kv.mu.Lock()
+
+	opChan := make(chan Op, 1)
+
+	kv.insertToPendingOps(args.ClientID, args.RequestID, opChan)
+
+	kv.mu.Unlock()
+
+	// Each server should execute Op commands as Raft commits them,
+	// i.e. as they appear on the applyCh.
+
+	// Wait until the Op is committed by the Raft or timeout.
+	select {
+	case op := <- opChan:
+
+		// Your solution needs to handle the case in which a leader has called Start()
+		// for a Clerk's RPC, but loses its leadership before the request is committed to the log.
+		// In this case you should arrange for the Clerk to re-send the request to other servers
+		// until it finds the new leader.
+
+		// One way to do this is for the server to detect that it has lost leadership, by
+		// noticing that a different request has appeared at the index returned by Start(),
+		// or that Raft's term has changed.
+		endTerm := kv.rf.GetCurrentTerm()
+		if endTerm == startTerm {
+			kv.mu.Lock()
+
+			dataHandler(&op, reply)
+
+			kv.mu.Unlock()
+
+			reply.Err = OK
+
+		} else {
+			reply.WrongLeader = true
+			//reply.Err
+		}
+
+		// If the ex-leader is partitioned by itself, it won't know about new leaders;
+		// but any client in the same partition won't be able to talk to a new leader either,
+		// so it's OK in this case for the server and client to wait indefinitely until the
+		// partition heals.
+
+	case <- time.After(800*time.Millisecond):
+		// TODO: timeout to listen from applyChan
+		kv.mu.Lock()
+		close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
+		// delete [cid,rid] from the 2D map
+		delete( kv.pendingOps[args.ClientID], args.RequestID)
+		kv.mu.Unlock()
+		reply.Err = ErrTimeOut
+	}
+
+	// An RPC handler should notice when Raft commits its Op, and then reply to the RPC.
 }
 
 //
@@ -53,6 +325,41 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+}
+
+// wangyu:
+func (kv *KVServer) ApplyMsgListener() {
+
+	for {
+		msg := <- kv.applyCh
+
+		DPrintf("ApplyMsgListener(): ", msg)
+
+
+		//fmt.Println("ApplyMsgListener(): ", msg)
+
+		// Type assertion, see https://stackoverflow.com/questions/18041334/convert-interface-to-int-in-golang
+		op := msg.Command.(Op)
+
+		switch op.Type {
+		case OP_TYPE_DEFAULT:
+			fmt.Println("ApplyMsgListener(): Error")
+		//case OP_TYPE_APPEND:
+		//case OP_TYPE_PUT:
+		//case OP_TYPE_GET:
+		default: // these three cases are handled in the same way.
+			kv.mu.Lock()
+			ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
+			if ok {
+				ch <- op
+			} else {
+				// otherwise the chan has been deleted due to timeout
+				// Do nothing.
+			}
+			kv.mu.Unlock()
+		}
+
+	}
 }
 
 //
@@ -78,11 +385,17 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
+	kv.database = make(map[string] string)
+	kv.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan Op)
+	kv.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
+	//
 
+	// Given code:
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	go kv.ApplyMsgListener()
 
 	return kv
 }
