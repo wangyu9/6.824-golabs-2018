@@ -4,7 +4,7 @@ import "labrpc"
 import "crypto/rand"
 import (
 	"math/big"
-	"sync"
+	//"sync"
 	"fmt"
 	"time"
 )
@@ -16,7 +16,7 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 
-	mu	sync.Mutex
+	// mu	sync.Mutex // do not need to lock for lab3a
 
 	clientID	ClientIndexType
 	cachedLeader int // the server ID that the client believe is the current leader.
@@ -62,12 +62,12 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 
-	ck.mu.Lock()
+	//ck.mu.Lock()
 
 	args := GetArgs{key, ck.clientID, ck.requestID}
 	ck.requestID++
 
-	ck.mu.Unlock()
+	//ck.mu.Unlock()
 
 	for {
 		// keep retrying until it succeed to reach to the leader
@@ -91,9 +91,9 @@ func (ck *Clerk) Get(key string) string {
 						}
 
 						if index!= ck.cachedLeader {
-							ck.mu.Lock()
+							//ck.mu.Lock()
 							ck.cachedLeader = index
-							ck.mu.Unlock()
+							//ck.mu.Unlock()
 						}
 
 						return reply.Value
@@ -139,12 +139,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You'll need to add RPC-sending code to the Clerk Put/Append/Get methods in client.go,
 	// and implement PutAppend() and Get() RPC handlers in server.go.
 
-	ck.mu.Lock()
+	//ck.mu.Lock()
 
 	args := PutAppendArgs{key, value, op, ck.clientID, ck.requestID}
 	ck.requestID++
 
-	ck.mu.Unlock()
+	//ck.mu.Unlock()
 
 	for {
 		// keep retrying until it succeed to reach to the leader
@@ -170,9 +170,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 
 						if index!= ck.cachedLeader {
-							ck.mu.Lock()
+							//ck.mu.Lock()
 							ck.cachedLeader = index
-							ck.mu.Unlock()
+							//ck.mu.Unlock()
 						}
 
 						return
