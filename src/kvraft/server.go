@@ -22,6 +22,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 const debug_getputappend = false
 
 type OpType int
+type ServerSeqIndexType int
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
@@ -29,6 +30,8 @@ const (  // iota is reset to 0
 	OP_TYPE_APPEND OpType = iota  //  == 2
 	OP_TYPE_GET OpType = iota  //  == 3
 )
+
+const TimeOutListenFromApplyCh = 1000
 
 type Op struct {
 	// Your definitions here.
@@ -42,6 +45,9 @@ type Op struct {
 
 	Key		interface{}
 	Value	interface{}
+
+	ServerID int
+	ServerSeqID ServerSeqIndexType
 }
 
 type KVServer struct {
@@ -56,12 +62,14 @@ type KVServer struct {
 
 	database	map[string] string
 
-	pendingOps	map[ClientIndexType] map[RequestIndexType] chan Op
+	totalReqReceived	ServerSeqIndexType
+	waitingOpChan	map[ServerSeqIndexType] chan Op
+	// pendingOps	map[ClientIndexType] map[RequestIndexType] chan Op
 	mostRecentWrite map[ClientIndexType] RequestIndexType
 	// the most recent put or append from each client
 }
 
-
+/*
 func (kv *KVServer) insertToPendingOps(cid ClientIndexType, rid RequestIndexType, value chan Op) {
 	// map[cid][rid] = value
 	if kv.pendingOps[cid]==nil {
@@ -69,7 +77,7 @@ func (kv *KVServer) insertToPendingOps(cid ClientIndexType, rid RequestIndexType
 	}
 	kv.pendingOps[cid][rid] = value
 }
-
+*/
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -82,11 +90,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	dataHandler := kv.getHandler
 
 	opEntry.Key = args.Key
+
 	// After this point, the code for PutAppend or Get should be the same.
+
+	opEntry.ServerID = kv.me
 
 	kv.mu.Lock()
 	opEntry.ClientID = args.ClientID
 	opEntry.RequestID = args.RequestID
+	opEntry.ServerSeqID = kv.totalReqReceived
+	kv.totalReqReceived++
 	kv.mu.Unlock()
 
 	// These handlers should enter an Op in the Raft log using Start();
@@ -101,12 +114,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-
 	kv.mu.Lock()
 
 	opChan := make(chan Op, 1)
 
-	kv.insertToPendingOps(args.ClientID, args.RequestID, opChan)
+	kv.waitingOpChan[opEntry.ServerSeqID] = opChan
 
 	kv.mu.Unlock()
 
@@ -143,13 +155,13 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		// so it's OK in this case for the server and client to wait indefinitely until the
 		// partition heals.
 
-	case <- time.After(800*time.Millisecond):
-		// TODO: timeout to listen from applyChan
 		kv.mu.Lock()
-		// TODO: close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
-		// delete [cid,rid] from the 2D map
-		// TODO: delete( kv.pendingOps[args.ClientID], args.RequestID)
+		//close(kv.waitingOpChan[op.ServerSeqID])
+		//delete(kv.waitingOpChan, op.ServerSeqID)
 		kv.mu.Unlock()
+
+	case <- time.After(TimeOutListenFromApplyCh*time.Millisecond):
+		// timeout to listen from applyChan
 		reply.Err = ErrTimeOut
 	}
 
@@ -168,7 +180,7 @@ func (kv *KVServer) getHandler(op *Op, reply *GetReply) {
  			reply.Err = ErrNoKey
 		}
 	default:
-		fmt.Println("Error: putAppendHandler() unrecognized operation type")
+		fmt.Println("Error: getHandler() unrecognized operation type")
 	}
 }
 
@@ -238,7 +250,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		opEntry.Type = OP_TYPE_APPEND
 	}
 
-	// TODO: OP_TYPE_GET
 	dataHandler := kv.putAppendHandler
 
 	opEntry.Key = args.Key
@@ -246,9 +257,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	// After this point, the code for PutAppend or Get should be the same.
 
+	opEntry.ServerID = kv.me
+
 	kv.mu.Lock()
 	opEntry.ClientID = args.ClientID
 	opEntry.RequestID = args.RequestID
+	opEntry.ServerSeqID = kv.totalReqReceived
+	kv.totalReqReceived++
 	kv.mu.Unlock()
 
 	// These handlers should enter an Op in the Raft log using Start();
@@ -263,12 +278,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-
 	kv.mu.Lock()
 
 	opChan := make(chan Op, 1)
 
-	kv.insertToPendingOps(args.ClientID, args.RequestID, opChan)
+	kv.waitingOpChan[opEntry.ServerSeqID] = opChan
 
 	kv.mu.Unlock()
 
@@ -307,18 +321,25 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		// so it's OK in this case for the server and client to wait indefinitely until the
 		// partition heals.
 
-	case <- time.After(800*time.Millisecond):
-		// TODO: timeout to listen from applyChan
 		kv.mu.Lock()
-		// TODO: close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
-		// delete [cid,rid] from the 2D map
-		// TODO: delete( kv.pendingOps[args.ClientID], args.RequestID)
+		//close(kv.waitingOpChan[op.ServerSeqID])
+		//delete(kv.waitingOpChan, op.ServerSeqID)
 		kv.mu.Unlock()
+
+	case <- time.After(TimeOutListenFromApplyCh*time.Millisecond):
 		reply.Err = ErrTimeOut
 	}
 
 	// An RPC handler should notice when Raft commits its Op, and then reply to the RPC.
 }
+
+/*
+func (kv *KVServer) closeAndDeletePeningOps(cid ClientIndexType, rid RequestIndexType) {
+	close( kv.pendingOps[cid][rid]) // close the channel no long used.
+	// delete [cid,rid] from the 2D map
+	delete( kv.pendingOps[cid], rid)
+}
+*/
 
 //
 // the tester calls Kill() when a KVServer instance won't
@@ -357,19 +378,25 @@ func (kv *KVServer) ApplyMsgListener() {
 				kv.tryApplyPutAppend(&op)
 			}
 
-			ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
+			isMe := op.ServerID == kv.me
 			kv.mu.Unlock() // avoid deadlock
-			go func() {
-				// somehow need this to pass 3a linearizability.
-				if ok {
-					ch <- op
-				} else {
-					// otherwise the chan has been deleted due to timeout
-					// Do nothing.
-				}
-			}()
+			if isMe {
+				go func(ssid ServerSeqIndexType, ) {
+					// somehow need this to pass 3a linearizability.
+					select {
+					case kv.waitingOpChan[ssid] <- op:
+						return
+					case <- time.After((100+TimeOutListenFromApplyCh)*time.Millisecond):
+						// save to close and delete ch, since Get/PutAppend has the same timeout amount and it must have returned already.
+						kv.mu.Lock()
+						//close(kv.waitingOpChan[ssid])
+						//delete(kv.waitingOpChan, ssid)
+						kv.mu.Unlock()
+						return
+					}
+				}(op.ServerSeqID)
+			}
 		}
-
 	}
 }
 
@@ -397,7 +424,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.database = make(map[string] string)
-	kv.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan Op)
+	//kv.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan Op)
+	kv.waitingOpChan = make(map[ServerSeqIndexType] chan Op)
 	kv.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
 	//
 

@@ -5,7 +5,6 @@ import "crypto/rand"
 import (
 	"math/big"
 	"sync"
-	//"time"
 	"fmt"
 	"time"
 )
@@ -70,8 +69,6 @@ func (ck *Clerk) Get(key string) string {
 
 	ck.mu.Unlock()
 
-	// TODO
-
 	for {
 		// keep retrying until it succeed to reach to the leader
 		for i :=0; i<len(ck.servers); i++ {
@@ -87,37 +84,38 @@ func (ck *Clerk) Get(key string) string {
 				if !reply.WrongLeader {
 					// get to the right leader
 
-					if index!= ck.cachedLeader {
-						ck.mu.Lock()
-						ck.cachedLeader = index
-						ck.mu.Unlock()
-					}
-
 					if (reply.Err==""||reply.Err==OK) {
 
 						if false {
 							fmt.Println("Succeed to Get", args, reply)
 						}
-						// TODO: do some thing
+
+						if index!= ck.cachedLeader {
+							ck.mu.Lock()
+							ck.cachedLeader = index
+							ck.mu.Unlock()
+						}
 
 						return reply.Value
 					} else {
-						// TODO: handling error
 
 						if reply.Err==ErrNoKey {
-							// return "" this is wrong // returns "" if the key does not exist.
+							return ""
+							// returns "" if the key does not exist.
+							// This is necessary otherwise the Get() will never terminate.
 							// do nothing.
-							// Since servers[i] *thinks* it is the leader, but it may no longer be
-							// the leader and the key may exist at current leader, so ErrNoKey
+							// It is safe to return because it really comes from the true leader
+							// since it comes from an applied (committed) message, which means a
+							// majority of servers agree on the result of this get()
 						}
 					}
 				}
 			}
 		}
 
-		// TODO: sleep some time.
-		// TODO: give up after certain number of trails.
-		time.Sleep(500*time.Millisecond)
+		// Sleep some time, since probably need to wait for network healing or leader re-election.
+		// Should not give up after certain number of trails since the lab3 tester ask for a result.
+		time.Sleep(200*time.Millisecond)
 	}
 
 
@@ -167,21 +165,18 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 					//fmt.Println("PutAppend() to leader", index)
 
-					if index!= ck.cachedLeader {
-						ck.mu.Lock()
-						ck.cachedLeader = index
-						ck.mu.Unlock()
-					}
 
 					if (reply.Err==""||reply.Err=="OK") {
 
 
-
-						// TODO: do some thing
+						if index!= ck.cachedLeader {
+							ck.mu.Lock()
+							ck.cachedLeader = index
+							ck.mu.Unlock()
+						}
 
 						return
 					} else {
-						// TODO: handle error
 					}
 				} else {
 					// fmt.Println("PutAppend() to non-leader")
@@ -189,13 +184,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			}
 		}
 
-		// TODO: sleep some time.
-		// TODO: give up after certain number of trails.
-		if true {
-			time.Sleep(500*time.Millisecond)
-		}
+		// Sleep some time, since probably need to wait for network healing or leader re-election.
+		// Should not give up after certain number of trails since the lab3 tester ask for a result.
+		time.Sleep(200*time.Millisecond)
 	}
-
 }
 
 func (ck *Clerk) Put(key string, value string) {
