@@ -16,7 +16,7 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 
-	// mu	sync.Mutex // do not need to lock for lab3a
+	// mu	sync.Mutex // do not need to lock for lab3a as given
 
 	clientID	ClientIndexType
 	cachedLeader int // the server ID that the client believe is the current leader.
