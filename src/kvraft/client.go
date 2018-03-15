@@ -117,7 +117,7 @@ func (ck *Clerk) Get(key string) string {
 
 		// TODO: sleep some time.
 		// TODO: give up after certain number of trails.
-		time.Sleep(100*time.Millisecond)
+		time.Sleep(500*time.Millisecond)
 	}
 
 
@@ -191,7 +191,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 		// TODO: sleep some time.
 		// TODO: give up after certain number of trails.
-		time.Sleep(100*time.Millisecond)
+		if true {
+			time.Sleep(500*time.Millisecond)
+		}
 	}
 
 }

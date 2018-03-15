@@ -146,9 +146,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	case <- time.After(800*time.Millisecond):
 		// TODO: timeout to listen from applyChan
 		kv.mu.Lock()
-		close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
+		// TODO: close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
 		// delete [cid,rid] from the 2D map
-		delete( kv.pendingOps[args.ClientID], args.RequestID)
+		// TODO: delete( kv.pendingOps[args.ClientID], args.RequestID)
 		kv.mu.Unlock()
 		reply.Err = ErrTimeOut
 	}
@@ -310,9 +310,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	case <- time.After(800*time.Millisecond):
 		// TODO: timeout to listen from applyChan
 		kv.mu.Lock()
-		close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
+		// TODO: close( kv.pendingOps[args.ClientID][args.RequestID]) // close the channel no long used.
 		// delete [cid,rid] from the 2D map
-		delete( kv.pendingOps[args.ClientID], args.RequestID)
+		// TODO: delete( kv.pendingOps[args.ClientID], args.RequestID)
 		kv.mu.Unlock()
 		reply.Err = ErrTimeOut
 	}

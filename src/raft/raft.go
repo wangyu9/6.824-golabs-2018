@@ -733,7 +733,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							}
 
 
-							if enable_debug_lab_2b {
+							if enable_debug_lab_2b && false {
 								for i := 0; i < len(args.Entries); i++ {
 									fmt.Println("Entry appended", args.Entries[i])
 								}
@@ -769,7 +769,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							needPersist = true
 						}
 
-						if enable_debug_lab_2b {
+						if enable_debug_lab_2b && false{
 							for i := 0; i < len(args.Entries); i++ {
 								fmt.Println("Entry appended", args.Entries[i])
 							}
@@ -1028,9 +1028,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			rf.mu.Unlock()
 
 			if enable_debug_lab_2b {
-				if (args.PrevLogIndex+1) == 5 && args.Entries[0].Command == 105 {
-					fmt.Println("Debug point2")
-				}
+				//if (args.PrevLogIndex+1) == 5 && args.Entries[0].Command == 105 {
+				//	fmt.Println("Debug point2")
+				//}
 			}
 
 			reply := AppendEntriesReply{}
