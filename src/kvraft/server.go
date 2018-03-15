@@ -48,6 +48,7 @@ type Op struct {
 
 	//ServerID int
 	//ServerSeqID ServerSeqIndexType
+	// Canno use req sequence number, since the server restarts will erase it.
 }
 
 type KVServer struct {
@@ -336,6 +337,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 /*
+// do not use this function, since it is tricky to figure out when to close and delete the channel, due to possible restart.
+// Maybe add it to Kill() as well for all channel will help. but do not have time to try it.
 func (kv *KVServer) closeAndDeletePeningOps(cid ClientIndexType, rid RequestIndexType) {
 	close( kv.pendingOps[cid][rid]) // close the channel no long used.
 	// delete [cid,rid] from the 2D map
@@ -381,25 +384,7 @@ func (kv *KVServer) ApplyMsgListener() {
 			}
 
 			ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
-			// isMe := op.ServerID == kv.me
 			kv.mu.Unlock() // avoid deadlock
-			/*if isMe {
-				go func(ssid ServerSeqIndexType, ) {
-					// somehow need this to pass 3a linearizability.
-					select {
-					case kv.waitingOpChan[ssid] <- op:
-						return
-					case <- time.After((100+TimeOutListenFromApplyCh)*time.Millisecond):
-						// save to close and delete ch, since Get/PutAppend has the same timeout amount and it must have returned already.
-						kv.mu.Lock()
-						//close(kv.waitingOpChan[ssid])
-						//delete(kv.waitingOpChan, ssid)
-						kv.mu.Unlock()
-						return
-					}
-				}(op.ServerSeqID)
-			}
-			*/
 			if ok {
 				go func() {
 					// somehow need this to pass 3a linearizability.
