@@ -22,7 +22,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 const debug_getputappend = false
 
 type OpType int
-type ServerSeqIndexType int
+//type ServerSeqIndexType int
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
@@ -46,8 +46,8 @@ type Op struct {
 	Key		interface{}
 	Value	interface{}
 
-	ServerID int
-	ServerSeqID ServerSeqIndexType
+	//ServerID int
+	//ServerSeqID ServerSeqIndexType
 }
 
 type KVServer struct {
@@ -62,14 +62,14 @@ type KVServer struct {
 
 	database	map[string] string
 
-	totalReqReceived	ServerSeqIndexType
-	waitingOpChan	map[ServerSeqIndexType] chan Op
-	// pendingOps	map[ClientIndexType] map[RequestIndexType] chan Op
+	//totalReqReceived	ServerSeqIndexType
+	//waitingOpChan	map[ServerSeqIndexType] chan Op
+	pendingOps	map[ClientIndexType] map[RequestIndexType] chan Op
 	mostRecentWrite map[ClientIndexType] RequestIndexType
 	// the most recent put or append from each client
 }
 
-/*
+
 func (kv *KVServer) insertToPendingOps(cid ClientIndexType, rid RequestIndexType, value chan Op) {
 	// map[cid][rid] = value
 	if kv.pendingOps[cid]==nil {
@@ -77,7 +77,7 @@ func (kv *KVServer) insertToPendingOps(cid ClientIndexType, rid RequestIndexType
 	}
 	kv.pendingOps[cid][rid] = value
 }
-*/
+
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -93,13 +93,13 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// After this point, the code for PutAppend or Get should be the same.
 
-	opEntry.ServerID = kv.me
+	//opEntry.ServerID = kv.me
 
 	kv.mu.Lock()
 	opEntry.ClientID = args.ClientID
 	opEntry.RequestID = args.RequestID
-	opEntry.ServerSeqID = kv.totalReqReceived
-	kv.totalReqReceived++
+	//opEntry.ServerSeqID = kv.totalReqReceived
+	//kv.totalReqReceived++
 	kv.mu.Unlock()
 
 	// These handlers should enter an Op in the Raft log using Start();
@@ -118,7 +118,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	opChan := make(chan Op, 1)
 
-	kv.waitingOpChan[opEntry.ServerSeqID] = opChan
+	kv.insertToPendingOps(opEntry.ClientID, opEntry.RequestID, opChan)
+	//kv.waitingOpChan[opEntry.ServerSeqID] = opChan
 
 	kv.mu.Unlock()
 
@@ -257,13 +258,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	// After this point, the code for PutAppend or Get should be the same.
 
-	opEntry.ServerID = kv.me
+	//opEntry.ServerID = kv.me
 
 	kv.mu.Lock()
 	opEntry.ClientID = args.ClientID
 	opEntry.RequestID = args.RequestID
-	opEntry.ServerSeqID = kv.totalReqReceived
-	kv.totalReqReceived++
+	//opEntry.ServerSeqID = kv.totalReqReceived
+	//kv.totalReqReceived++
 	kv.mu.Unlock()
 
 	// These handlers should enter an Op in the Raft log using Start();
@@ -282,7 +283,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	opChan := make(chan Op, 1)
 
-	kv.waitingOpChan[opEntry.ServerSeqID] = opChan
+	// kv.waitingOpChan[opEntry.ServerSeqID] = opChan
+	kv.insertToPendingOps(opEntry.ClientID, opEntry.RequestID, opChan)
 
 	kv.mu.Unlock()
 
@@ -378,9 +380,10 @@ func (kv *KVServer) ApplyMsgListener() {
 				kv.tryApplyPutAppend(&op)
 			}
 
-			isMe := op.ServerID == kv.me
+			ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
+			// isMe := op.ServerID == kv.me
 			kv.mu.Unlock() // avoid deadlock
-			if isMe {
+			/*if isMe {
 				go func(ssid ServerSeqIndexType, ) {
 					// somehow need this to pass 3a linearizability.
 					select {
@@ -395,6 +398,21 @@ func (kv *KVServer) ApplyMsgListener() {
 						return
 					}
 				}(op.ServerSeqID)
+			}
+			*/
+			if ok {
+				go func() {
+					// somehow need this to pass 3a linearizability.
+					select {
+					case ch <- op:
+						return
+					case <- time.After((100+TimeOutListenFromApplyCh)*time.Millisecond):
+						// save to close and delete ch, since Get/PutAppend has the same timeout amount and it must have returned already.
+						//kv.mu.Lock()
+						//kv.mu.Unlock()
+						return
+					}
+				}()
 			}
 		}
 	}
@@ -424,8 +442,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.database = make(map[string] string)
-	//kv.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan Op)
-	kv.waitingOpChan = make(map[ServerSeqIndexType] chan Op)
+	kv.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan Op)
+	// kv.waitingOpChan = make(map[ServerSeqIndexType] chan Op)
 	kv.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
 	//
 
