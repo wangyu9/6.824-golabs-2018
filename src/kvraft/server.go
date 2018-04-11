@@ -8,6 +8,7 @@ import (
 	"sync"
 	"fmt"
 	"time"
+	"bytes"
 )
 
 const Debug = 0
@@ -368,39 +369,90 @@ func (kv *KVServer) ApplyMsgListener() {
 
 		//fmt.Println("ApplyMsgListener(): ", msg)
 
-		// Type assertion, see https://stackoverflow.com/questions/18041334/convert-interface-to-int-in-golang
-		op := msg.Command.(Op)
 
-		switch op.Type {
-		case OP_TYPE_DEFAULT:
-			fmt.Println("ApplyMsgListener(): Error")
-		//case OP_TYPE_APPEND:
-		//case OP_TYPE_PUT:
-		//case OP_TYPE_GET:
-		default: // these three cases are handled in the same way.
-			kv.mu.Lock()
-			if op.Type!=OP_TYPE_GET {
-				kv.tryApplyPutAppend(&op)
+		//if msg.CommandValid {
+		{
+
+			// Type assertion, see https://stackoverflow.com/questions/18041334/convert-interface-to-int-in-golang
+			op := msg.Command.(Op)
+
+			switch op.Type {
+			case OP_TYPE_DEFAULT:
+				fmt.Println("ApplyMsgListener(): Error")
+				//case OP_TYPE_APPEND:
+				//case OP_TYPE_PUT:
+				//case OP_TYPE_GET:
+			default: // these three cases are handled in the same way.
+				kv.mu.Lock()
+				if op.Type != OP_TYPE_GET {
+					kv.tryApplyPutAppend(&op)
+				}
+
+				ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
+				kv.mu.Unlock()                                     // avoid deadlock
+				if ok {
+					go func() {
+						// somehow need this to pass 3a linearizability.
+						select {
+						case ch <- op:
+							return
+						case <-time.After((100 + TimeOutListenFromApplyCh) * time.Millisecond):
+							// save to close and delete ch, since Get/PutAppend has the same timeout amount and it must have returned already.
+							//kv.mu.Lock()
+							//kv.mu.Unlock()
+							return
+						}
+					}()
+				}
 			}
 
-			ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
-			kv.mu.Unlock() // avoid deadlock
-			if ok {
-				go func() {
-					// somehow need this to pass 3a linearizability.
-					select {
-					case ch <- op:
-						return
-					case <- time.After((100+TimeOutListenFromApplyCh)*time.Millisecond):
-						// save to close and delete ch, since Get/PutAppend has the same timeout amount and it must have returned already.
-						//kv.mu.Lock()
-						//kv.mu.Unlock()
-						return
-					}
-				}()
-			}
 		}
+
+		if false {
+
+			snapshotData := msg.Command.(raft.InstallSnapshotMsg).SnapshotData
+
+			kv.mu.Lock()
+
+			r := bytes.NewBuffer(snapshotData)
+			d := labgob.NewDecoder(r)
+
+			if d.Decode(kv.database) != nil{
+				fmt.Println("ReadSnapshot() fails.")
+				//Success = false
+			} else {
+				//Success = true
+			}
+
+			kv.mu.Unlock()
+
+		}
+
 	}
+}
+
+
+func (kv *KVServer) CheckRaftSize() {
+	for {
+
+		kv.mu.Lock()
+		kv.takeSnapshot()
+		kv.mu.Unlock()
+
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// wangyu:
+func (kv *KVServer) takeSnapshot() {
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(kv.database)
+	upperData := w.Bytes()
+
+	kv.rf.TakeSnapshot(upperData)
 }
 
 //
@@ -437,8 +489,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+
+	//kv.takeSnapshot()
+
 	// You may need initialization code here.
 	go kv.ApplyMsgListener()
 
 	return kv
 }
+
+
