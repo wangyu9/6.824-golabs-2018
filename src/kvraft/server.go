@@ -407,21 +407,44 @@ func (kv *KVServer) ApplyMsgListener() {
 
 		} else {
 
-			snapshotData := msg.Command.(raft.InstallSnapshotMsg).SnapshotData
 
-			kv.mu.Lock()
+			switch msg.Command.(type) {
+			case raft.InstallSnapshotMsg:
+				{
+					upperData := msg.Command.(raft.InstallSnapshotMsg).SnapshotData
 
-			r := bytes.NewBuffer(snapshotData)
-			d := labgob.NewDecoder(r)
+					kv.mu.Lock()
 
-			if d.Decode(&kv.database) != nil{
-				fmt.Println("ReadSnapshot() fails.")
-				//Success = false
-			} else {
-				//Success = true
+					r := bytes.NewBuffer(upperData)
+					d := labgob.NewDecoder(r)
+
+					if d.Decode(&kv.database) != nil{
+						fmt.Println("ReadSnapshot() fails.")
+						//Success = false
+					} else {
+						//Success = true
+					}
+
+					kv.mu.Unlock()
+				}
+			case raft.SaveSnapshotMsg:
+				{
+					kv.mu.Lock()
+
+					upperData := kv.encodeDatabase()
+
+					kv.rf.LogCompactionEnd(upperData)
+
+					kv.mu.Unlock()
+
+				}
+			default:
+				{
+					fmt.Println("Error: ApplyMsgListener() unknown type of command msg.")
+				}
 			}
 
-			kv.mu.Unlock()
+
 
 		}
 
@@ -429,27 +452,38 @@ func (kv *KVServer) ApplyMsgListener() {
 }
 
 
-func (kv *KVServer) CheckRaftSize() {
+func (kv *KVServer) CheckRaftSize() {// TODO delete
 	for {
 
+		// TODO: add the Lock back.
 		kv.mu.Lock()
 		kv.takeSnapshot()
 		kv.mu.Unlock()
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
+
+
 // wangyu:
-func (kv *KVServer) takeSnapshot() {
+func (kv *KVServer) encodeDatabase() (upperData []byte) {
 
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
 	e.Encode(kv.database)
-	upperData := w.Bytes()
+	upperData = w.Bytes()
 
-	kv.rf.TakeSnapshot(upperData)
+	return upperData
+}
+
+
+func (kv *KVServer) takeSnapshot() {
+
+	upperData := kv.encodeDatabase()
+
+	kv.rf.TakeSnapshot(upperData, 10)//TODO kv.maxraftstate)
 }
 
 //
@@ -491,6 +525,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	go kv.ApplyMsgListener()
+
+	// go kv.CheckRaftSize() // TODO delete
 
 	return kv
 }
