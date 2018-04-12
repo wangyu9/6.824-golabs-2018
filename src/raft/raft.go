@@ -54,6 +54,8 @@ const enable_lab_2b = true // must be true in final submission
 const enable_lab_2c = true
 const enable_lab_3b = true
 
+const enable_log_compaction_test = false// this should be turned off for running kvraft.
+
 const enable_incrementing_output = false
 const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
@@ -291,6 +293,9 @@ type Raft struct {
  	// cannot have more than one tryAppendEntriesRecursively running at the same time
 
  	applyStack []ApplyMsg
+
+ 	// use only when enable_log_compaction_test==true, for debugging purpose only.
+ 	appliedLog []ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -403,28 +408,79 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 
+// used only if enable_incrementing_output==true
+func (rf *Raft) LogCompaction() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	upperData := make([]byte, 0)
+	{// encode Applied Log
+		w := new(bytes.Buffer)
+		e := labgob.NewEncoder(w)
+
+		e.Encode(rf.appliedLog)
+		upperData = w.Bytes()
+
+		//fmt.Println("encode:", upperData)
+	}
+	rf.takeSnapshot(upperData)
+}
+
+func (rf *Raft) decodeAppliedLog(upperData []byte) (Success bool, appliedLog []ApplyMsg) {
+
+	r := bytes.NewBuffer(upperData)
+	d := labgob.NewDecoder(r)
+
+	if d.Decode(&appliedLog) != nil{
+		Success = false
+	} else {
+		Success = true
+	}
+	fmt.Println("decode:", upperData)
+
+	return Success, appliedLog
+}
+
+
 // used in only lab3b.
 func (rf *Raft) TakeSnapshot(upperData []byte) {
+	rf.mu.Lock()
+	rf.takeSnapshot(upperData)
+	rf.mu.Unlock()
+}
+
+// used in only lab3b.
+func (rf *Raft) takeSnapshot(upperData []byte) {
 
 	// Think about when a kvserver should snapshot its state and what should be
 	// included in the snapshot. Raft must store each snapshot in the persister
 	// object using SaveStateAndSnapshot(), along with corresponding Raft state.
 	// You can read the latest stored snapshot using ReadSnapshot().
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+
+	//fmt.Println("LogCompaction()")
+
 	// no need to snapshot by itself.
 
-	prevBaseIndex := rf.baseIndex
+	// prevBaseIndex := rf.baseIndex
 
 
-	LastIncludedIndex := prevBaseIndex // the snapshot replaces all entries up through and including this index
+	LastIncludedIndex := rf.lastApplied // the snapshot replaces all entries up through and including this index
 	LastIncludedTerm := rf.getLogTerm(LastIncludedIndex) //term of lastIncludedIndex
 
+
+	// This should clear the log until the last applied log.
 	// https://stackoverflow.com/questions/16971741/how-do-you-clear-a-slice-in-go
-	rf.log = nil
-	rf.log = make([] LogEntry, 0)
-	rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
+
+	newLog := make([] LogEntry, 0)
+	if rf.getLogDisp(rf.lastApplied)>=1 {
+		newLog = rf.log[(max(rf.getLogDisp(rf.lastApplied), 1) + 1):] // log[0] is always a place holder, so it should not be copied.
+		rf.log = nil
+		rf.log = make([] LogEntry, 0)
+		rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
+		rf.log = append(rf.log, newLog...)
+		rf.baseIndex = rf.lastApplied
+	}
 
 	// save snapshot
 	{
@@ -433,9 +489,9 @@ func (rf *Raft) TakeSnapshot(upperData []byte) {
 		e.Encode(LastIncludedIndex)
 		e.Encode(LastIncludedTerm)
 		e.Encode(upperData)
-		//snapshotData := append(w.Bytes(), upperData...)
 		snapshotData := w.Bytes()
 		rf.persister.SaveStateAndSnapshot(rf.dataBytesToPersist(), snapshotData)
+		//rf.persister.SaveRaftState(rf.dataBytesToPersist())
 	}
 
 }
@@ -517,6 +573,8 @@ func (rf *Raft) ReadSnapshot(snapshotData []byte) {
 		Success, LastIncludedIndex, LastIncludedTerm, UpperData := rf.decodeSnapshotData(snapshotData)
 		if Success {
 			rf.applySnapshot(LastIncludedIndex, LastIncludedTerm, UpperData)
+		} else {
+			fmt.Println("Error: ReadSnapshot(): decodeSnapshotData() fails")
 		}
 
 	}
@@ -526,7 +584,7 @@ func (rf *Raft) ReadSnapshot(snapshotData []byte) {
 }
 
 
-func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, snapshotData []byte) {
+func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upperData []byte) {
 
 	rf.lastApplied = max(rf.lastApplied, LastIncludedIndex)
 	rf.commitIndex = max(rf.commitIndex, LastIncludedIndex)
@@ -539,10 +597,28 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, snaps
 	rf.log = make([] LogEntry, 0)
 	rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
 
-	go func() {
-		msg := ApplyMsg{false,InstallSnapshotMsg{snapshotData},0}
-		rf.applyChan <- msg
-	}()
+	if enable_log_compaction_test {
+
+		Success, appliedLog := rf.decodeAppliedLog(upperData)
+		if Success {
+			{
+
+				rf.mu.Lock()
+
+				for i:=0; i<len(appliedLog); i++{
+					rf.applyStack = append(rf.applyStack, appliedLog[i])
+				}
+				rf.mu.Unlock()
+			}
+		} else {
+			fmt.Println("Error: applySnapshot() fails to decode")
+		}
+	} else {
+		go func() {
+			msg := ApplyMsg{false, InstallSnapshotMsg{upperData}, 0}
+			rf.applyChan <- msg
+		}()
+	}
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -1248,8 +1324,6 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			//term := rf.currentTerm
 			//state := rf.serverState
 			prevLogIndex := rf.nextIndex[serverIndex]-1
-			prevLogTerm := rf.getLogTerm(prevLogIndex)
-			leaderCommit := rf.commitIndex
 
 
 			if enable_lab_3b {
@@ -1264,10 +1338,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						if Success {
 							args = InstallSnapshotArgs{rf.currentTerm, rf.me, LastIncludedIndex, LastIncludedTerm, UpperData}
 						} else {
+							fmt.Println("Error: trySendAppendEntriesRecursively(): decodeSnapshotData() fails")
 							break
 						}
 
-						// TODO optional: optimize this later
 						rf.mu.Unlock()
 
 
@@ -1309,6 +1383,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 					fmt.Println("!!!!!!! This should never happen !!!!!!!!!!!")
 				}
 			}
+
+
+			prevLogTerm := rf.getLogTerm(prevLogIndex)
+			leaderCommit := rf.commitIndex
 
 			// entries are in reverse index order!
 
@@ -2332,6 +2410,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 
+	// given code
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
 
@@ -2344,11 +2426,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			copyStack := rf.applyStack
 			rf.applyStack = nil
 			rf.applyStack = make([] ApplyMsg, 0)
-			rf.mu.Unlock()
+			//rf.mu.Unlock()
 
 			for i:=0; i<len(copyStack); i++ {
 				if copyStack[i].CommandValid {
 					rf.applyChan <- copyStack[i]
+					if enable_log_compaction_test {
+						rf.appliedLog = append(rf.appliedLog, copyStack[i])
+					}
 				} else {
 					switch copyStack[i].Command.(type) {
 					case InstallSnapshotMsg:
@@ -2356,10 +2441,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					default:
 						fmt.Println("Error: unknow command type!")
 					}
-
 				}
-
 			}
+
+			//rf.mu.Lock()
+			// update the last applied index.
+			if len(copyStack)>0 {
+				rf.lastApplied = copyStack[len(copyStack)-1].CommandIndex
+			}
+			rf.mu.Unlock()
 
 			time.Sleep(50*time.Millisecond) // TODO: why need this?
 		}
@@ -2367,10 +2457,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// go rf.stateMachineLoop()
 
-	// back to given code
 
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	if enable_log_compaction_test {
+		go func() {
+			for {
+				time.Sleep(400 * time.Millisecond)
+				rf.LogCompaction()
+			}
+		}()
+	}
+
 
 	return rf
 }

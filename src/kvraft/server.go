@@ -370,8 +370,7 @@ func (kv *KVServer) ApplyMsgListener() {
 		//fmt.Println("ApplyMsgListener(): ", msg)
 
 
-		//if msg.CommandValid {
-		{
+		if msg.CommandValid {
 
 			// Type assertion, see https://stackoverflow.com/questions/18041334/convert-interface-to-int-in-golang
 			op := msg.Command.(Op)
@@ -406,9 +405,7 @@ func (kv *KVServer) ApplyMsgListener() {
 				}
 			}
 
-		}
-
-		if false {
+		} else {
 
 			snapshotData := msg.Command.(raft.InstallSnapshotMsg).SnapshotData
 
@@ -417,7 +414,7 @@ func (kv *KVServer) ApplyMsgListener() {
 			r := bytes.NewBuffer(snapshotData)
 			d := labgob.NewDecoder(r)
 
-			if d.Decode(kv.database) != nil{
+			if d.Decode(&kv.database) != nil{
 				fmt.Println("ReadSnapshot() fails.")
 				//Success = false
 			} else {
@@ -490,7 +487,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 
-	//kv.takeSnapshot()
+	kv.takeSnapshot()
 
 	// You may need initialization code here.
 	go kv.ApplyMsgListener()
