@@ -1458,6 +1458,11 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							if ok {
 								if reply.Success {
 
+									rf.nextIndex[serverIndex] = rf.baseIndex + 1 // important to have this!!!
+									rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
+
+									prevLogIndex = rf.baseIndex
+
 								} else {
 									if !rf.checkTermNoLessThan(reply.Term) {
 										break
@@ -1475,8 +1480,6 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						}()
 
 					}
-
-					prevLogIndex = rf.baseIndex
 				}
 
 				// so then we have made sure prevLogIndex+1 >= rf.baseIndex+1, i.e. prevLogIndex>= rf.baseIndex.
@@ -1572,7 +1575,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							}
 
 
-							if true { // TODO !!!!!!!!!!!!! TODO OOOO change this back!!!!!!!!!!!!!!!!!!
+							if false { // TODO !!!!!!!!!!!!! TODO OOOO change this back!!!!!!!!!!!!!!!!!!
 								// This is my original implementation of pass lab2b,
 								// retreating by 1.
 								rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
@@ -1585,6 +1588,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 									reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
 									// Retreat more than 1 as suggested in the lecture
 									nI := rf.nextIndex[serverIndex]-1
+									//for ; nI>=1+rf.baseIndex; nI-- {
 									for ; nI>=1+rf.baseIndex; nI-- {
 
 										if enable_lab_3b {
@@ -1611,7 +1615,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 									if nI==rf.baseIndex {
 										// it also means leader does not have entries with conflicting term
 										// but we can be more aggresive since all rf.nextIndex > reply.ConflictTerm
-										rf.nextIndex[serverIndex] = reply.FirstIndexOfConflictTerm
+										rf.nextIndex[serverIndex] = rf.baseIndex// reply.FirstIndexOfConflictTerm
 										// cannot use rf.baseIndex+1, since no entry with conflicting term is possibly
 										// due to log compaction, establishment at baseIndex by InstallSnapshot it necessary.
 									}
@@ -1639,9 +1643,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								break
 							}
 						} else {
-							if enable_debug_lab_2b {
+							//if enable_debug_lab_2b {
 								fmt.Println("ERROR: not implemented!!!!!!!!!!!!!!!!")
-							}
+							//}
 							break
 						}
 
@@ -2562,7 +2566,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.clearApplyStack()
 			rf.mu.Unlock()
 
-			time.Sleep(50*time.Millisecond) // TODO: why need this?
+			time.Sleep(1*time.Millisecond) // TODO: why need this?
 		}
 	}()
 
