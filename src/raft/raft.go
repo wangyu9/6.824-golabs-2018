@@ -399,7 +399,7 @@ func (rf *Raft) readPersist(data []byte) {
 			d.Decode(&votedFor) != nil ||
 				d.Decode(&log) != nil ||
 					d.Decode(&baseIndex) != nil{
-				//fmt.Println("readPersist() fails.")
+				fmt.Println("readPersist() fails.")
 		} else {
 
 			rf.mu.Lock()
@@ -1718,6 +1718,10 @@ func broadcastAppendEntries(peers []labrpc.ClientEnd, me int, args AppendEntries
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+
+	rf.mu.Lock()
+	rf.clearApplyStack()
+	rf.mu.Unlock()
 }
 
 
