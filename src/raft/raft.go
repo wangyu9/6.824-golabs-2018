@@ -110,6 +110,7 @@ const (  // iota is reset to 0
 	ErrorType_AppendEntries_NO_LOG_WITH_INDEX ErrorTypeAppendEntries = iota
 	ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ErrorTypeAppendEntries = iota
 	ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM = iota  //  == 2
+	ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION = iota
 )
 
 func (serverState *ServerState) toString() (string) {
@@ -349,6 +350,12 @@ func (rf *Raft) persist() {
 	if enable_lab_2c {
 		rf.persister.SaveRaftState(rf.dataBytesToPersist())
 	}
+
+	if enable_lab_3b {
+		go func() {
+			rf.LogCompactionStart()
+		}()
+	}
 }
 
 
@@ -441,22 +448,25 @@ func (rf *Raft) LogCompactionStart() {
 	// this function can be called by either raft or the upper layer (kvraft)
 	rf.mu.Lock()
 
+	//fmt.Println("LogCompactionStart(): entered")//, rf.maxlogsize, len(rf.log))
+
 	rf.clearApplyStack()
 
-	if rf.maxlogsize<10 || len(rf.log) < rf.maxlogsize {
+	if rf.maxlogsize < 10 || rf.persister.RaftStateSize() < rf.maxlogsize {
+	//if rf.maxlogsize<10 || len(rf.log) < rf.maxlogsize {
 		// TODO: this is just a necessary but not sufficient condition to apply log compaction
 		rf.mu.Unlock()
 		return
 	}
 
-	fmt.Println("LogCompactionStart(): initialized")
+	//fmt.Println("LogCompactionStart(): initialized")
 
 	// never do go routine around this.
-	msg := ApplyMsg{false, SaveSnapshotMsg{}, 0}
+	msg := ApplyMsg{false, SaveSnapshotMsg{}, -1}
 
 	select {
 	case rf.applyChan <- msg:
-		fmt.Println("LogCompactionStart(): msg received from kvraft")
+		//fmt.Println("LogCompactionStart(): msg received from kvraft")
 		// DO not unlock and wait LogCompactionEnd() to unlock.
 		// TODO: it may not be taked away by kvraft. fix the issue
 	case <-time.After(400*time.Millisecond):
@@ -473,7 +483,7 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 
 	rf.mu.Unlock()
 
-	fmt.Println("LogCompactionEnd(): ")
+	//fmt.Println("LogCompactionEnd(): ")
 }
 
 func (rf *Raft) decodeAppliedLog(upperData []byte) (Success bool, appliedLog []ApplyMsg) {
@@ -495,9 +505,9 @@ func (rf *Raft) decodeAppliedLog(upperData []byte) (Success bool, appliedLog []A
 // used in only lab3b.
 func (rf *Raft) TakeSnapshot(upperData []byte, maxraftstate int) {
 	rf.mu.Lock()
-	if maxraftstate>0 && len(rf.log) > maxraftstate {
+	//if maxraftstate>0 && rf.getLogDisp(rf.lastApplied) > maxraftstate {
 		rf.takeSnapshot(upperData)
-	}
+	//}
 	rf.mu.Unlock()
 }
 
@@ -559,7 +569,7 @@ func (rf *Raft) decodeSnapshotData(snapshotData []byte) (Success bool, LastInclu
 	if d.Decode(&LastIncludedIndex) != nil ||
 		d.Decode(&LastIncludedTerm) != nil ||
 			d.Decode(&UpperData) != nil{
-		fmt.Println("decodeSnapshotData() fails.")
+		//fmt.Println("decodeSnapshotData() fails.")
 		Success = false
 	} else {
 		// rf.applySnapshot(LastIncludedIndex, LastIncludedTerm, snapshotData)
@@ -713,6 +723,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 
+	if state == SERVER_STATE_LEADER {
+		fmt.Println("This wiredly happened")
+		return
+	}
 
 	{ // code outside this blanket are copied and pasted from AppendEntries, with comments
 	// and unnecessary parts removed.
@@ -973,6 +987,18 @@ func max(a, b int) int {
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.mu.Lock()
+
+	/*needLogCompaction := false
+	if enable_lab_3b {
+		// trigger the log compaction if necessary
+		defer func() {
+			if needLogCompaction {
+				// has to be in  go routine, LogCompactionStart() has Lock()
+				rf.LogCompactionStart()
+			}
+		}()
+	}*/
+
 	defer rf.mu.Unlock()
 
 	reply.Success = true
@@ -1051,7 +1077,16 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				}
 
 
-			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {
+			} else if enable_lab_3b && rf.getLogDisp(args.PrevLogIndex)<0 {
+				// 2.2e log does contain an entry at prevLogIndex before, but it has been compacted.
+				reply.Success = false
+				// Necessary to InstallSnapshot
+				//reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
+				reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
+				reply.FirstIndexOfConflictTerm = rf.baseIndex
+				//fmt.Println("Fattal Error(): AppendEntries(), never should retreat to a compacted entry which has been applied.")
+
+			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {//TODO
 				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
 				reply.Success = false
 
@@ -1059,8 +1094,11 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				reply.ConflictTerm = rf.getLogTerm(args.PrevLogIndex)
 				firstIndex := args.PrevLogIndex
 				for index:= firstIndex; index>=1; index-- {
-					if enable_lab_3b && rf.getLogDisp(index)<= 0{
+					if enable_lab_3b && rf.getLogDisp(index)< 0{
 						// cannot retreat further since log entry is compacted.
+						//reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
+						reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
+						//fmt.Println("Fattal Error(): AppendEntries(), never should retreat to a compacted entry which has been applied.")
 						break
 					}
 					if rf.getLogTerm(index) < reply.ConflictTerm {
@@ -1178,6 +1216,10 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						rf.applyStack = append(rf.applyStack, msg)
 					}
 
+					/*if enable_lab_3b {
+						needLogCompaction = true
+					}*/
+
 					/*go func(msgs []ApplyMsg) {
 						//  order is perserved
 						for i:=0; i<len(msgs); i++ {
@@ -1284,8 +1326,19 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		isLeader = false
 
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 
+		/*needLogCompaction := false
+		if enable_lab_3b {
+			// trigger the log compaction if necessary
+			defer func() {
+				if needLogCompaction {
+					// has to be in  go routine, LogCompactionStart() has Lock()
+					rf.LogCompactionStart()
+				}
+			}()
+		}*/
+
+		defer rf.mu.Unlock()
 		defer rf.persist()
 
 
@@ -1300,6 +1353,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			if enable_lab_2c {
 				//always persist//rf.persist()
 			}
+			/*if enable_lab_3b {
+				needLogCompaction = true
+			}*/
 
 			if enable_debug_lab_2b {
 				fmt.Println("Server", rf.me, "Start(): rf.log size is:", len(rf.log))
@@ -1346,6 +1402,17 @@ func (rf *Raft) checkTermNoLessThan(term int) (bool) {
 	return termNoLessThan
 }
 
+
+func (rf *Raft) makeInstallArgs () (Success bool, args InstallSnapshotArgs) {
+	snapshotData := rf.persister.ReadSnapshot()
+	Success, LastIncludedIndex, LastIncludedTerm, UpperData := rf.decodeSnapshotData(snapshotData)
+	//args := InstallSnapshotArgs{}
+	if Success {
+		args = InstallSnapshotArgs{rf.currentTerm, rf.me, LastIncludedIndex, LastIncludedTerm, UpperData}
+	}
+	return Success, args
+}
+
 // used if enable_lab_2b
 func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted int){
 
@@ -1383,16 +1450,12 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 				if prevLogIndex < rf.baseIndex {
 					// then necessary to install snapshot first.
 
-					fmt.Println("do not expect the experiment to pass")
+					//fmt.Println("do not expect the experiment to pass")
 
 
 					{
-						snapshotData := rf.persister.ReadSnapshot()
-						Success, LastIncludedIndex, LastIncludedTerm, UpperData := rf.decodeSnapshotData(snapshotData)
-						args := InstallSnapshotArgs{}
-						if Success {
-							args = InstallSnapshotArgs{rf.currentTerm, rf.me, LastIncludedIndex, LastIncludedTerm, UpperData}
-						} else {
+						Success, args := rf.makeInstallArgs()
+						if !Success {
 							fmt.Println("Error: trySendAppendEntriesRecursively(): decodeSnapshotData() fails")
 							break
 						}
@@ -1527,17 +1590,18 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 								if reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
 									// Retreat more than 1 as suggested in the lecture
-									nI:=rf.nextIndex[serverIndex]-1
-									for ; nI>=1; nI-- {
+									nI := rf.nextIndex[serverIndex]-1
+									for ; nI>=1+rf.baseIndex; nI-- {
 
 										if enable_lab_3b {
-											// added for lab3b
-											if rf.getLogDisp(nI) <= 1 {
+											// added for lab3b TODO remove
+											/*if rf.getLogDisp(nI) <= 1 {
 												// cannot retreat anymore, since the log has been removed
 												// during log compaction.
 												rf.nextIndex[serverIndex] = nI
 												break
 											}
+											*/
 										}
 										if rf.getLogTerm(nI) == reply.ConflictTerm {
 											// no need to retreat more
@@ -1550,10 +1614,12 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 											break
 										}
 									}
-									if nI==0 {
+									if nI==rf.baseIndex {
 										// it also means leader does not have entries with conflicting term
 										// but we can be more aggresive since all rf.nextIndex > reply.ConflictTerm
-										rf.nextIndex[serverIndex] = rf.baseIndex + 1 //reply.FirstIndexOfConflictTerm
+										rf.nextIndex[serverIndex] = reply.FirstIndexOfConflictTerm
+										// cannot use rf.baseIndex+1, since no entry with conflicting term is possibly
+										// due to log compaction, establishment at baseIndex by InstallSnapshot it necessary.
 									}
 									if enable_debug_lab_2c {
 										if rf.nextIndex[serverIndex] == 0 {
@@ -2482,6 +2548,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
 
@@ -2499,8 +2566,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// go rf.stateMachineLoop()
 
-
 	return rf
+}
+
+func (rf *Raft) InitInstallSnapshot() {
+	Success, args := rf.makeInstallArgs()
+	if Success {
+		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
+	} else {
+		//fmt.Println("Error: Make(): makeInstallArgs() fails")
+	}
 }
 
 func (rf *Raft) clearApplyStack() {
@@ -2508,11 +2583,12 @@ func (rf *Raft) clearApplyStack() {
 	copyStack := rf.applyStack
 	rf.applyStack = nil
 	rf.applyStack = make([] ApplyMsg, 0)
-	//rf.mu.Unlock()
 
 	for i:=0; i<len(copyStack); i++ {
 		if copyStack[i].CommandValid {
 			rf.applyChan <- copyStack[i]
+			rf.lastApplied = copyStack[len(copyStack)-1].CommandIndex
+			// update the last applied index. Only for valid command.
 			if enable_log_compaction_test {
 				rf.appliedLog = append(rf.appliedLog, copyStack[i])
 			}
@@ -2526,11 +2602,6 @@ func (rf *Raft) clearApplyStack() {
 		}
 	}
 
-	//rf.mu.Lock()
-	// update the last applied index.
-	if len(copyStack)>0 {
-		rf.lastApplied = copyStack[len(copyStack)-1].CommandIndex
-	}
 }
 
 func (rf *Raft) SetMaxLogSize(size int) {

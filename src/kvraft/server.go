@@ -418,11 +418,13 @@ func (kv *KVServer) ApplyMsgListener() {
 					r := bytes.NewBuffer(upperData)
 					d := labgob.NewDecoder(r)
 
-					if d.Decode(&kv.database) != nil{
-						fmt.Println("ReadSnapshot() fails.")
+					if d.Decode(&kv.database) != nil ||
+						d.Decode(&kv.mostRecentWrite) != nil {
+						fmt.Println("Decode Snapshot fails.")
 						//Success = false
 					} else {
 						//Success = true
+						//fmt.Println("Decoded Database:", kv.database)
 					}
 
 					kv.mu.Unlock()
@@ -433,9 +435,11 @@ func (kv *KVServer) ApplyMsgListener() {
 
 					upperData := kv.encodeDatabase()
 
-					kv.rf.LogCompactionEnd(upperData)
-
 					kv.mu.Unlock()
+
+					// no need to worry kv.database is updated during gap, since rf.mu is locked.
+
+					kv.rf.LogCompactionEnd(upperData)
 
 				}
 			default:
@@ -472,7 +476,10 @@ func (kv *KVServer) encodeDatabase() (upperData []byte) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
+	//fmt.Println("Encoded Database:", kv.database)
+
 	e.Encode(kv.database)
+	e.Encode(kv.mostRecentWrite)
 	upperData = w.Bytes()
 
 	return upperData
@@ -483,7 +490,7 @@ func (kv *KVServer) takeSnapshot() {
 
 	upperData := kv.encodeDatabase()
 
-	kv.rf.TakeSnapshot(upperData, 10)//TODO kv.maxraftstate)
+	kv.rf.TakeSnapshot(upperData, 13)//TODO kv.maxraftstate)
 }
 
 //
@@ -521,25 +528,31 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 
-	kv.takeSnapshot()
+	//kv.takeSnapshot()
 
 	// You may need initialization code here.
 	go kv.ApplyMsgListener()
 
 	//if enable_lab_3b {
-	{
+	/*{
 		kv.rf.SetMaxLogSize( -1 )
-		//kv.rf.SetMaxLogSize( 100 )
+		kv.rf.SetMaxLogSize( 100 )
 		go func() {
 			for {
 				time.Sleep(10 * time.Millisecond)
 				kv.rf.LogCompactionStart()
 			}
 		}()
+	}*/
+
+	{
+		kv.rf.SetMaxLogSize( maxraftstate )
 	}
 
 
 	// go kv.CheckRaftSize() // TODO delete
+
+	kv.rf.InitInstallSnapshot()
 
 	return kv
 }
