@@ -60,6 +60,8 @@ const enable_incrementing_output = false
 const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
 
+const use_apply_stack = false
+
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
 	// fmt.Println(r)
@@ -454,7 +456,9 @@ func (rf *Raft) LogCompactionStart() {
 
 	//fmt.Println("LogCompactionStart(): entered")//, rf.maxlogsize, len(rf.log))
 
-	rf.clearApplyStack()
+	if use_apply_stack {
+		rf.clearApplyStack()
+	}
 
 	if rf.maxlogsize < 10 || rf.persister.RaftStateSize() < rf.maxlogsize {
 	//if rf.maxlogsize<10 || len(rf.log) < rf.maxlogsize {
@@ -638,8 +642,16 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		Success, appliedLog := rf.decodeAppliedLog(upperData)
 		if Success {
 			{
-				for i:=0; i<len(appliedLog); i++{
-					rf.applyStack = append(rf.applyStack, appliedLog[i])
+
+				if use_apply_stack {
+					for i:=0; i<len(appliedLog); i++{
+						rf.applyStack = append(rf.applyStack, appliedLog[i])
+					}
+				} else {
+
+					for i:=0; i<len(appliedLog); i++{
+						rf.applyChan <- appliedLog[i]
+					}
 				}
 			}
 		} else {
@@ -648,7 +660,9 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 	} else {
 
 		{ // cannot do within go routine.
-			rf.clearApplyStack()
+			if use_apply_stack {
+				rf.clearApplyStack()
+			}
 			msg := ApplyMsg{false, InstallSnapshotMsg{upperData}, 0}
 			rf.applyChan <- msg
 		}
@@ -1196,7 +1210,11 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							fmt.Println("Server", rf.me, "committed entry", msg)
 						}
 
-						rf.applyStack = append(rf.applyStack, msg)
+						if use_apply_stack {
+							rf.applyStack = append(rf.applyStack, msg)
+						} else {
+							rf.applyChan <- msg
+						}
 					}
 
 					/*if enable_lab_3b {
@@ -1723,9 +1741,11 @@ func broadcastAppendEntries(peers []labrpc.ClientEnd, me int, args AppendEntries
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 
-	rf.mu.Lock()
-	rf.clearApplyStack()
-	rf.mu.Unlock()
+	if use_apply_stack {
+		rf.mu.Lock()
+		rf.clearApplyStack()
+		rf.mu.Unlock()
+	}
 }
 
 
@@ -2459,7 +2479,12 @@ func (rf *Raft) startCommitChecker() {
 					msg := ApplyMsg{true, rf.getLog(i).Command, i}
 					msgs = append(msgs, msg)
 					//fmt.Println("Leader", rf.me, "apply msg", msg.Command)
-					rf.applyStack = append(rf.applyStack, msg)
+
+					if use_apply_stack {
+						rf.applyStack = append(rf.applyStack, msg)
+					} else {
+						rf.applyChan <- msg
+					}
 				}
 
 				//  do this in a goroutine
@@ -2560,16 +2585,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	go rf.startCommitChecker()
 
-	go func() {
-		for {
-			rf.mu.Lock()
-			rf.clearApplyStack()
-			rf.mu.Unlock()
+	if use_apply_stack {
+		go func() {
+			for {
+				rf.mu.Lock()
+				rf.clearApplyStack()
+				rf.mu.Unlock()
 
-			time.Sleep(1*time.Millisecond) // TODO: why need this?
-		}
-	}()
-
+				time.Sleep(1 * time.Millisecond) // TODO: why need this?
+			}
+		}()
+	}
 	// go rf.stateMachineLoop()
 
 	return rf
