@@ -540,7 +540,7 @@ func (rf *Raft) takeSnapshot(upperData []byte) {
 
 	newLog := make([] LogEntry, 0)
 	if rf.getLogDisp(rf.lastApplied)>=1 {
-		newLog = rf.log[(max(rf.getLogDisp(rf.lastApplied), 1) + 1):] // log[0] is always a place holder, so it should not be copied.
+		newLog = rf.log[(rf.getLogDisp(rf.lastApplied)+1):] // log[0] is always a place holder, so it should not be copied.
 		rf.log = nil
 		rf.log = make([] LogEntry, 0)
 		rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
@@ -1070,12 +1070,12 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
 				reply.ConflictTerm = rf.getLogTerm(args.PrevLogIndex)
 				firstIndex := args.PrevLogIndex
-				for index:= firstIndex; index>=1; index-- {
+				for index:= firstIndex; index>=rf.baseIndex + 1; index-- {
 					if enable_lab_3b && rf.getLogDisp(index)< 0{
 						// cannot retreat further since log entry is compacted.
 						reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 						//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
-						fmt.Println("Fattal Error()2: AppendEntries(), never should retreat to a compacted entry which has been applied. index=", index,"rf.baseIndex=", rf.baseIndex)
+						fmt.Println("Fattal Error()2: AppendEntries(), never should retreat to a compacted entry which has been applied. index=", index,"rf.baseIndex=", rf.baseIndex, "args.PrevLogIndex=",args.PrevLogIndex)
 						break
 					}
 					if rf.getLogTerm(index) > reply.ConflictTerm {
@@ -1563,7 +1563,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
 
 							if reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
-								fmt.Println("Debug Point XXX: ")
+								fmt.Println("Debug Point XXX: rf.baseIndex=", rf.baseIndex, "FirstIndexOfConflictTerm", reply.FirstIndexOfConflictTerm)
 							}
 
 							// Retreat
@@ -1572,7 +1572,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							}
 
 
-							if false { // TODO !!!!!!!!!!!!! TODO OOOO change this back!!!!!!!!!!!!!!!!!!
+							if true { // TODO !!!!!!!!!!!!! TODO OOOO change this back!!!!!!!!!!!!!!!!!!
 								// This is my original implementation of pass lab2b,
 								// retreating by 1.
 								rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
@@ -2005,7 +2005,7 @@ func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 					//	break
 					case <- rf.heartbeatsSendChan[index]:
 					case <- time.After( (HeartbeatSendPeriod * time.Millisecond) ):
-						if false { // this does not work to pass 2A ReElect, which I do not understand.
+						if false {  // this does not work to pass 2A ReElect, which I do not understand.
 							rf.mu.Lock()
 							term := rf.currentTerm
 							rf.mu.Unlock()
@@ -2071,7 +2071,8 @@ func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 
 
 											if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX ||
-												reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
+												reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ||
+													reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
 												rf.mu.Lock()
 												term := rf.currentTerm
 												rf.mu.Unlock()
@@ -2444,7 +2445,10 @@ func (rf *Raft) startCommitChecker() {
 				msgs := make([]ApplyMsg, 0)
 
 				for i := rf.commitIndex + 1; i <= N; i++ {
-					msg := ApplyMsg{i>0, rf.getLog(i).Command, i}
+					if i<=rf.baseIndex {
+						continue
+					}
+					msg := ApplyMsg{true, rf.getLog(i).Command, i}
 					msgs = append(msgs, msg)
 					//fmt.Println("Leader", rf.me, "apply msg", msg.Command)
 					rf.applyStack = append(rf.applyStack, msg)
