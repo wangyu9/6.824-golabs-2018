@@ -1572,7 +1572,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							}
 
 
-							if true { // TODO !!!!!!!!!!!!! TODO OOOO change this back!!!!!!!!!!!!!!!!!!
+							if false { // TODO !!!!!!!!!!!!! TODO OOOO change this back!!!!!!!!!!!!!!!!!!
 								// This is my original implementation of pass lab2b,
 								// retreating by 1.
 								rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
