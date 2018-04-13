@@ -328,6 +328,7 @@ func (rf *Raft) dataBytesToPersist() ([]byte) {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.baseIndex)
 	data := w.Bytes()
 	return data
 }
@@ -391,11 +392,13 @@ func (rf *Raft) readPersist(data []byte) {
 		var currentTerm int
 		var votedFor int
 		var log [] LogEntry
+		var baseIndex int
 
 
 		if d.Decode(&currentTerm) != nil ||
 			d.Decode(&votedFor) != nil ||
-				d.Decode(&log) != nil {
+				d.Decode(&log) != nil ||
+					d.Decode(&baseIndex) != nil{
 				//fmt.Println("readPersist() fails.")
 		} else {
 
@@ -404,6 +407,7 @@ func (rf *Raft) readPersist(data []byte) {
 			rf.currentTerm = currentTerm
 			rf.votedFor = votedFor
 			rf.log = log
+			rf.baseIndex = baseIndex
 			//fmt.Println("readPersist() succeeds.")
 
 			//fmt.Println("currentTerm:", rf.currentTerm)
@@ -583,33 +587,6 @@ func (rf *Raft) readSnapshot(snapshotData []byte) {
 
 	// make sure nothing breaks in between state persist and snapshot persist.
 
-	/*
-	data := rf.persister.ReadRaftState()
-	{ // this is a copy and paste of rf.persist() without locking in between.
-		if data == nil || len(data) < 1 { // bootstrap without any state?
-			return
-		}
-
-		{
-			r := bytes.NewBuffer(data)
-			d := labgob.NewDecoder(r)
-
-			var currentTerm int
-			var votedFor int
-			var log [] LogEntry
-
-			if d.Decode(&currentTerm) != nil ||
-				d.Decode(&votedFor) != nil ||
-				d.Decode(&log) != nil {
-			} else {
-				rf.currentTerm = currentTerm
-				rf.votedFor = votedFor
-				rf.log = log
-			}
-
-		}
-	}
-	*/
 
 	{
 		// read snapshot
@@ -1084,7 +1061,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				//reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 				reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
 				reply.FirstIndexOfConflictTerm = rf.baseIndex
-				//fmt.Println("Fattal Error(): AppendEntries(), never should retreat to a compacted entry which has been applied.")
+				fmt.Println("Fattal Error()1: AppendEntries(), never should retreat to a compacted entry which has been applied. args.PrevLogIndex=",args.PrevLogIndex,"rf.baseIndex=", rf.baseIndex)
 
 			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {//TODO
 				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
@@ -1098,8 +1075,11 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						// cannot retreat further since log entry is compacted.
 						//reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 						reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
-						//fmt.Println("Fattal Error(): AppendEntries(), never should retreat to a compacted entry which has been applied.")
+						fmt.Println("Fattal Error()2: AppendEntries(), never should retreat to a compacted entry which has been applied. index=", index,"rf.baseIndex=", rf.baseIndex)
 						break
+					}
+					if rf.getLogTerm(index) > reply.ConflictTerm {
+						fmt.Println("Fattal Error(): this shall never happen")
 					}
 					if rf.getLogTerm(index) < reply.ConflictTerm {
 						break
@@ -1502,6 +1482,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 				}
 			}
 
+
+			if prevLogIndex<rf.baseIndex {
+				fmt.Println("ERROR: prevLogIndex=",prevLogIndex, "rf.baseIndex=",rf.baseIndex)
+			}
 
 			prevLogTerm := rf.getLogTerm(prevLogIndex)
 			leaderCommit := rf.commitIndex
@@ -2570,6 +2554,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) InitInstallSnapshot() {
+	// fmt.Println("InitInstallSnapshot()")
 	Success, args := rf.makeInstallArgs()
 	if Success {
 		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
