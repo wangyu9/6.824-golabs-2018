@@ -1058,8 +1058,8 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				// 2.2e log does contain an entry at prevLogIndex before, but it has been compacted.
 				reply.Success = false
 				// Necessary to InstallSnapshot
-				//reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
-				reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
+				reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
+				//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
 				reply.FirstIndexOfConflictTerm = rf.baseIndex
 				fmt.Println("Fattal Error()1: AppendEntries(), never should retreat to a compacted entry which has been applied. args.PrevLogIndex=",args.PrevLogIndex,"rf.baseIndex=", rf.baseIndex)
 
@@ -1073,8 +1073,8 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				for index:= firstIndex; index>=1; index-- {
 					if enable_lab_3b && rf.getLogDisp(index)< 0{
 						// cannot retreat further since log entry is compacted.
-						//reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
-						reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
+						reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
+						//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
 						fmt.Println("Fattal Error()2: AppendEntries(), never should retreat to a compacted entry which has been applied. index=", index,"rf.baseIndex=", rf.baseIndex)
 						break
 					}
@@ -1185,7 +1185,10 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 					msgs := make([]ApplyMsg, 0)
 
 					for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
-						msg := ApplyMsg{i>0, rf.getLog(i).Command, i}
+						if i<= rf.baseIndex {
+							continue
+						}
+						msg := ApplyMsg{true, rf.getLog(i).Command, i}
 						msgs = append(msgs, msg)
 
 
@@ -1427,6 +1430,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 
 			if enable_lab_3b {
+
 				if prevLogIndex < rf.baseIndex {
 					// then necessary to install snapshot first.
 
@@ -1555,7 +1559,12 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						}
 
 						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX ||
-							reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
+							reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ||
+								reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
+
+							if reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
+								fmt.Println("Debug Point XXX: ")
+							}
 
 							// Retreat
 							if enable_debug_lab_2b {
@@ -1563,7 +1572,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							}
 
 
-							if false {
+							if true { // TODO !!!!!!!!!!!!! TODO OOOO change this back!!!!!!!!!!!!!!!!!!
 								// This is my original implementation of pass lab2b,
 								// retreating by 1.
 								rf.nextIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
@@ -1572,20 +1581,21 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								}
 							} else {
 
-								if reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
+								if reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ||
+									reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
 									// Retreat more than 1 as suggested in the lecture
 									nI := rf.nextIndex[serverIndex]-1
 									for ; nI>=1+rf.baseIndex; nI-- {
 
 										if enable_lab_3b {
-											// added for lab3b TODO remove
+											// added for lab3b TODO  is these necessary?
 											/*if rf.getLogDisp(nI) <= 1 {
 												// cannot retreat anymore, since the log has been removed
 												// during log compaction.
 												rf.nextIndex[serverIndex] = nI
 												break
-											}
-											*/
+											}*/
+
 										}
 										if rf.getLogTerm(nI) == reply.ConflictTerm {
 											// no need to retreat more
