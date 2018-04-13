@@ -526,6 +526,19 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	go kv.ApplyMsgListener()
 
+	//if enable_lab_3b {
+	{
+		kv.rf.SetMaxLogSize( -1 )
+		//kv.rf.SetMaxLogSize( 100 )
+		go func() {
+			for {
+				time.Sleep(10 * time.Millisecond)
+				kv.rf.LogCompactionStart()
+			}
+		}()
+	}
+
+
 	// go kv.CheckRaftSize() // TODO delete
 
 	return kv

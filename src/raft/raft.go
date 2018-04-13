@@ -441,14 +441,15 @@ func (rf *Raft) LogCompactionStart() {
 	// this function can be called by either raft or the upper layer (kvraft)
 	rf.mu.Lock()
 
+	rf.clearApplyStack()
+
 	if rf.maxlogsize<10 || len(rf.log) < rf.maxlogsize {
+		// TODO: this is just a necessary but not sufficient condition to apply log compaction
 		rf.mu.Unlock()
 		return
 	}
 
 	fmt.Println("LogCompactionStart(): initialized")
-
-	rf.clearApplyStack()
 
 	// never do go routine around this.
 	msg := ApplyMsg{false, SaveSnapshotMsg{}, 0}
@@ -471,6 +472,8 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 	rf.takeSnapshot(upperData)
 
 	rf.mu.Unlock()
+
+	fmt.Println("LogCompactionEnd(): ")
 }
 
 func (rf *Raft) decodeAppliedLog(upperData []byte) (Success bool, appliedLog []ApplyMsg) {
@@ -556,7 +559,7 @@ func (rf *Raft) decodeSnapshotData(snapshotData []byte) (Success bool, LastInclu
 	if d.Decode(&LastIncludedIndex) != nil ||
 		d.Decode(&LastIncludedTerm) != nil ||
 			d.Decode(&UpperData) != nil{
-		fmt.Println("xxx() fails.")
+		fmt.Println("decodeSnapshotData() fails.")
 		Success = false
 	} else {
 		// rf.applySnapshot(LastIncludedIndex, LastIncludedTerm, snapshotData)
@@ -1035,37 +1038,39 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 			// not a heartbeat entry
 
 			// TODO: think about if always args.PrevLogIndex>=0
-			if args.PrevLogIndex > rf.getLastLogIndex() || rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {
-				// 2. Reply false if log doesn’t contain an entry at prevLogIndex
-				// whose term matches prevLogTerm (§5.3)
-				if enable_debug_lab_2b {
-					fmt.Println("Server", rf.me, "AppendEntries: Case 2 false")
-				}
+			// 2. Reply false if log doesn’t contain an entry at prevLogIndex
+			// whose term matches prevLogTerm (§5.3)
+			if args.PrevLogIndex > rf.getLastLogIndex() {
+				// 2.1 log doesn’t contain an entry at prevLogIndex
 				reply.Success = false
 
-				if args.PrevLogIndex <= rf.getLastLogIndex() {
-					reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
-					reply.ConflictTerm = rf.getLogTerm(args.PrevLogIndex)
-					firstIndex := args.PrevLogIndex
-					for index:= firstIndex; index>=1; index-- {
-						if enable_lab_3b && rf.getLogDisp(index)<= 0{
-							// cannot retreat further since log entry is compacted.
-							break
-						}
-						if rf.getLogTerm(index) < reply.ConflictTerm {
-							break
-						}
-						if rf.getLogTerm(index) == reply.ConflictTerm {
-							firstIndex = index
-						}
-					}
-					reply.FirstIndexOfConflictTerm = firstIndex
-				} else {
+				{
 					// no such index, let alone its term
 					reply.Error = ErrorType_AppendEntries_NO_LOG_WITH_INDEX
 					reply.LastLogIndex = rf.getLastLogIndex()
 				}
 
+
+			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {
+				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
+				reply.Success = false
+
+				reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
+				reply.ConflictTerm = rf.getLogTerm(args.PrevLogIndex)
+				firstIndex := args.PrevLogIndex
+				for index:= firstIndex; index>=1; index-- {
+					if enable_lab_3b && rf.getLogDisp(index)<= 0{
+						// cannot retreat further since log entry is compacted.
+						break
+					}
+					if rf.getLogTerm(index) < reply.ConflictTerm {
+						break
+					}
+					if rf.getLogTerm(index) == reply.ConflictTerm {
+						firstIndex = index
+					}
+				}
+				reply.FirstIndexOfConflictTerm = firstIndex
 
 			} else {
 				reply.Success = true
@@ -2495,18 +2500,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// go rf.stateMachineLoop()
 
 
-	if enable_lab_3b {
-		rf.maxlogsize = -1
-		rf.maxlogsize = 100
-		go func() {
-			for {
-				time.Sleep(10 * time.Millisecond)
-				rf.LogCompactionStart()
-			}
-		}()
-	}
-
-
 	return rf
 }
 
@@ -2538,4 +2531,9 @@ func (rf *Raft) clearApplyStack() {
 	if len(copyStack)>0 {
 		rf.lastApplied = copyStack[len(copyStack)-1].CommandIndex
 	}
+}
+
+func (rf *Raft) SetMaxLogSize(size int) {
+
+	rf.maxlogsize = size
 }
