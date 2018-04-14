@@ -681,6 +681,7 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		if rf.commitIndex >LastIncludedIndex {
 			fmt.Println("Error 101: applySnapshot() this should not happen!!")
 			// Though the new elected leader is not necessary committed more entries than some servers.
+			// This should have been ensured by my Installsnapshot Protocol.
 		}
 		rf.commitIndex = LastIncludedIndex
 		// remember to persist, after applySnapshot(), did not do it here to prevent double persist
@@ -692,10 +693,11 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		rf.currentTerm = max(rf.currentTerm, LastIncludedTerm)  //  // this is clearly wrong: rf.currentTerm = LastIncludedTerm
 		rf.lastApplied = LastIncludedIndex// rf.lastApplied was 0 since not persisted
 		rf.baseIndex = LastIncludedIndex
-		//if rf.commitIndex < LastIncludedIndex {
-		//	fmt.Println("This can also happen!!")// This can also happen since rf.commitIndex is not persisted.
-		//}
-		rf.commitIndex = max( rf.commitIndex, LastIncludedIndex) // This is necessary, either one can be larger!!!
+		// rf.commitIndex is not persisted, initialized to 0.
+		if rf.commitIndex != 0 {
+			fmt.Println("Error 103: applySnapshot() this should not happen!!")
+		}
+		rf.commitIndex = LastIncludedIndex // This is necessary, either one can be larger!!!
 		// OK not to persist
 	}
 
