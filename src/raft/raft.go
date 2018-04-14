@@ -60,6 +60,8 @@ const enable_incrementing_output = false
 const verbose = 0//2
 const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
+const enable_debug_lab_3b = false
+const enable_warning_lab3b = false
 
 const use_apply_stack = false
 
@@ -555,18 +557,24 @@ func (rf *Raft) takeSnapshot(upperData []byte) {
 
 	// save snapshot
 	{
-		w := new(bytes.Buffer)
-		e := labgob.NewEncoder(w)
-		e.Encode(LastIncludedIndex)
-		e.Encode(LastIncludedTerm)
-		e.Encode(upperData)
-		snapshotData := w.Bytes()
+		snapshotData := rf.encodeSnapshotData(LastIncludedIndex, LastIncludedTerm, upperData)
 		rf.persister.SaveStateAndSnapshot(rf.dataBytesToPersist(), snapshotData)
 		//rf.persister.SaveRaftState(rf.dataBytesToPersist())
 	}
 
 }
 
+
+func (rf *Raft) encodeSnapshotData(LastIncludedIndex int, LastIncludedTerm int, UpperData []byte) (snapshotData []byte) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(LastIncludedIndex)
+	e.Encode(LastIncludedTerm)
+	e.Encode(UpperData)
+	snapshotData = w.Bytes()
+
+	return snapshotData
+}
 
 func (rf *Raft) decodeSnapshotData(snapshotData []byte) (Success bool, LastIncludedIndex int, LastIncludedTerm int, UpperData []byte) {
 	//var LastIncludedIndex int
@@ -589,6 +597,8 @@ func (rf *Raft) decodeSnapshotData(snapshotData []byte) (Success bool, LastInclu
 }
 
 func (rf *Raft) readSnapshot(snapshotData []byte) {
+
+	fmt.Println("Errror: no longer used!!")
 
 	// make sure nothing breaks in between state persist and snapshot persist.
 
@@ -633,7 +643,8 @@ func (rf *Raft) applyMsg(msg ApplyMsg) {
 	} else {
 		switch msg.Command.(type) {
 		case InstallSnapshotMsg:
-			rf.readSnapshot(msg.Command.(InstallSnapshotMsg).SnapshotData) // lastApplied and rf.applyChan <- msg is updated within.
+			// no longer used.
+			//rf.readSnapshot(msg.Command.(InstallSnapshotMsg).SnapshotData) // lastApplied and rf.applyChan <- msg is updated within.
 		default:
 			fmt.Println("Error: unknow command type!")
 		}
@@ -696,7 +707,7 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 
-	fmt.Println("Entering InstallSnapshot()")
+	//fmt.Println("Entering InstallSnapshot()")
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -748,15 +759,22 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	{ // code outside this blanket are copied and pasted from AppendEntries, with comments
 	// and unnecessary parts removed.
 		// doing this is not right: rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, true)
-		msg := ApplyMsg{false, InstallSnapshotMsg{args.Data},-1}
-		rf.applyMsg(msg)
+		// why? I think now it is right.
+
+		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, true)
+		// lastApplied and  rf.applyChan <- msg are taken care within.
+
 		needPersist = true
 	}
 
 
 	rf.heartbeatsChan <- true
 
-	fmt.Println("Exiting InstallSnapshot()")
+	if enable_debug_lab_3b {
+		fmt.Println("Exiting InstallSnapshot(), with server state:")
+		fmt.Println("log=", rf.log, rf.baseIndex)
+	}
+
 }
 //
 // example RequestVote RPC arguments structure.
@@ -1109,8 +1127,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 				//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
 				reply.FirstIndexOfConflictTerm = rf.baseIndex
-				fmt.Println("Fattal Error()1: AppendEntries(), never should retreat to a compacted entry which has been applied. args.PrevLogIndex=",args.PrevLogIndex,"rf.baseIndex=", rf.baseIndex)
-
+				if enable_warning_lab3b {
+					fmt.Println("Fattal Error()1: AppendEntries(), never should retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
+				}
 			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {//TODO
 				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
 				reply.Success = false
@@ -1123,7 +1142,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						// cannot retreat further since log entry is compacted.
 						reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 						//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
-						fmt.Println("Fattal Error()2: AppendEntries(), never should retreat to a compacted entry which has been applied. index=", index,"rf.baseIndex=", rf.baseIndex, "args.PrevLogIndex=",args.PrevLogIndex)
+						if enable_warning_lab3b {
+							fmt.Println("Fattal Error()2: AppendEntries(), never should retreat to a compacted entry which has been applied. index=", index, "rf.baseIndex=", rf.baseIndex, "args.PrevLogIndex=", args.PrevLogIndex)
+						}
 						break
 					}
 					if rf.getLogTerm(index) > reply.ConflictTerm {
@@ -1482,24 +1503,21 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 			//term := rf.currentTerm
 			//state := rf.serverState
-			var prevLogIndex int
-			prevLogIndex = rf.nextIndex[serverIndex]-1
-			fmt.Println("prevLogIndex=",prevLogIndex)
+			prevLogIndex := rf.nextIndex[serverIndex]-1
 
 
 			if enable_lab_3b {
 
 				if prevLogIndex < rf.baseIndex {
 					// then necessary to install snapshot first.
-
-					fmt.Println("prevLogIndex=", prevLogIndex, "is missing from current compacted log with base=", rf.baseIndex)
-
+					if enable_debug_lab_3b {
+						fmt.Println("prevLogIndex=", prevLogIndex, "is missing from current compacted log with base=", rf.baseIndex)
+					}
 
 					//oldBaseIndex := rf.baseIndex
 
 					{
 						Success, args := rf.makeInstallArgs()
-						fmt.Println("InstallArgs.LastIncludedIndex=", args.LastIncludedIndex)
 						if !Success {
 							fmt.Println("Error: trySendAppendEntriesRecursively(): decodeSnapshotData() fails")
 							return //break
@@ -1525,8 +1543,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 									prevLogIndex = rf.nextIndex[serverIndex] - 1
 
-									fmt.Println("Sending InstallSnapshot Successfully: nextIndex=",rf.nextIndex, "prevLogIndex=",prevLogIndex)
-
+									if enable_debug_lab_3b {
+										fmt.Println("Sending InstallSnapshot Successfully: nextIndex=", rf.nextIndex, "prevLogIndex=", prevLogIndex)
+									}
 								} else {
 									if !rf.checkTermNoLessThan(reply.Term, serverIndex) {
 										return //break
@@ -1554,16 +1573,12 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			}
 
 
-			fmt.Println("prevLogIndex=",prevLogIndex)
 			if prevLogIndex<rf.baseIndex {
 				// fmt.Println("This can happen: prevLogIndex=",prevLogIndex, "rf.baseIndex=",rf.baseIndex)
 				// This is definitely possible, since rf.baseIndex may increase since oldBaseIndex
 				continue
 			}
 
-			if prevLogIndex == 52 {
-				fmt.Println("Debug point")
-			}
 
 			prevLogTerm := rf.getLogTerm(prevLogIndex)
 			leaderCommit := rf.commitIndex
@@ -1604,13 +1619,13 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 				if ok {
 					if reply.Success {
 
-						//if verbose >0 || enable_debug_lab_2b {
+						if verbose >0 || enable_debug_lab_2b || enable_debug_lab_3b {
 							fmt.Println("Leader", rf.me, "succeeded to append entries [", args.PrevLogIndex+1,
 								",", args.PrevLogIndex+1+len(entries), ") to server", serverIndex, ".")
 							for i := 0; i < len(entries); i++ {
 								fmt.Println("Entry", entries[i])
 							}
-						//}
+						}
 
 						rf.nextIndex[serverIndex] += len(entries)
 						rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
@@ -1628,16 +1643,18 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 						return //break
 					} else {
 
-						//if verbose > 0 {
+						if verbose > 0 {
 							fmt.Println("Leader", rf.me, "failed to append entries to server", serverIndex, ".")
-						//}
+						}
 
 						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX ||
 							reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ||
 								reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
 
 							if reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
-								fmt.Println("Debug Point XXX: rf.baseIndex=", rf.baseIndex, "FirstIndexOfConflictTerm", reply.FirstIndexOfConflictTerm)
+								if enable_warning_lab3b {
+									fmt.Println("Debug Point XXX: rf.baseIndex=", rf.baseIndex, "FirstIndexOfConflictTerm", reply.FirstIndexOfConflictTerm)
+								}
 								return
 							}
 
