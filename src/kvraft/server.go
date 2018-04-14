@@ -21,7 +21,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 const debug_getputappend = false
-const enable_warning_lab3 = false
+const enable_warning_lab3 = true
 
 type OpType int
 //type ServerSeqIndexType int
@@ -396,10 +396,10 @@ func (kv *KVServer) ApplyMsgListener() {
 						select {
 						case ch <- op:
 							return
-						case <-time.After((100 + TimeOutListenFromApplyCh) * time.Millisecond):
-							if enable_warning_lab3 {
-								fmt.Println("Warning!!!! Ops are lost due to timing out.")
-							}
+						//case <-time.After((100 + TimeOutListenFromApplyCh) * time.Millisecond):
+						//	if enable_warning_lab3 {
+						//		fmt.Println("Warning!!!! Ops are lost due to timing out.")
+						//	}
 							// save to close and delete ch, since Get/PutAppend has the same timeout amount and it must have returned already.
 							//kv.mu.Lock()
 							//kv.mu.Unlock()
@@ -550,12 +550,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}*/
 
 	{
-		//maxraftstate = -1 // TODO remove this later
+		maxraftstate = 800 // TODO remove this later, change it back in final submission!!!
 		kv.rf.SetMaxLogSize( maxraftstate )
 	}
 
-
-	// go kv.CheckRaftSize() // TODO delete
 
 	kv.rf.InitInstallSnapshot()
 

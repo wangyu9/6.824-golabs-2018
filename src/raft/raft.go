@@ -61,7 +61,7 @@ const verbose = 0//2
 const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
 const enable_debug_lab_3b = false
-const enable_warning_lab3b = false
+const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
 
@@ -540,7 +540,7 @@ func (rf *Raft) takeSnapshot(upperData []byte) {
 
 	LastIncludedIndex := rf.lastApplied // the snapshot replaces all entries up through and including this index
 	LastIncludedTerm := rf.getLogTerm(LastIncludedIndex) //term of lastIncludedIndex
-
+	// TODO: this sometimes run out of lower bound, due to log compaction. Wired, this should be impossible.
 
 	// This should clear the log until the last applied log.
 	// https://stackoverflow.com/questions/16971741/how-do-you-clear-a-slice-in-go
@@ -2523,6 +2523,8 @@ func (rf *Raft) startCommitChecker() {
 			N := rf.commitIndex
 			for cN := rf.commitIndex + 1; cN <= rf.getLastLogIndex(); cN++ {
 				if rf.getLogTerm(cN) != rf.currentTerm {
+					// TODO: this getLogTerm Sometimes goes out of bound.
+					// Wired, since cN shouldn't have been compacted.
 					continue
 				}
 				count := 1
