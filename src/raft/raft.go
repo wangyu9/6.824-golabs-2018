@@ -647,6 +647,7 @@ func (rf *Raft) readSnapshot(snapshotData []byte) {
 func (rf *Raft) applyMsg(msg ApplyMsg) {
 
 	if msg.CommandValid {
+
 		rf.applyChan <- msg
 		rf.lastApplied = msg.CommandIndex
 		// update the last applied index. Only for valid command.
@@ -671,11 +672,15 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		rf.log = nil
 		rf.log = make([] LogEntry, 0)
 		rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
+		// alright to clear the log, but should only update the place holder,
+		// since the raft leader may resend an entry, e.g. after re-election.
+		// rf.log[0].LogTerm = LastIncludedTerm
 		rf.currentTerm = max(rf.currentTerm, LastIncludedTerm) // not necessary, but does not hurt.
 		rf.lastApplied = LastIncludedIndex// this is clearly wrong: max(rf.lastApplied, LastIncludedIndex)
 		rf.baseIndex = LastIncludedIndex
 		if rf.commitIndex >LastIncludedIndex {
 			fmt.Println("Error 101: applySnapshot() this should not happen!!")
+			// Though the new elected leader is not necessary committed more entries than some servers.
 		}
 		rf.commitIndex = LastIncludedIndex
 		// remember to persist, after applySnapshot(), did not do it here to prevent double persist
@@ -783,10 +788,19 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		// doing this is not right: rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, true)
 		// why? I think now it is right.
 
-		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, true)
-		// lastApplied and  rf.applyChan <- msg are taken care within.
+		if args.LastIncludedIndex < rf.commitIndex {
 
-		needPersist = true
+			reply.Success = false
+			reply.Error = ErrorType_Install_Snapshot_LocalSnapshot_Is_Ahead
+
+		} else
+		{
+			rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, true)
+			// lastApplied and  rf.applyChan <- msg are taken care within.
+			// This is incorrect: rf.log[0].LogTerm = args.Term
+
+			needPersist = true
+		}
 	}
 
 
@@ -1004,7 +1018,7 @@ type AppendEntriesReply struct {
 	LastLogIndex int
 	// used only if Error==ErrorType_AppendEntries_NO_LOG_WITH_INDEX
 
-	BaseLogIndex int
+	BaseLogIndex int // TODO: assign a different name
 	// used only if Error==ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 }
 
@@ -1028,11 +1042,25 @@ type InstallSnapshotArgs struct {
 	// Done //true if this is the last chunk
 }
 
+type ErrorTypeInstallSnapshot int
+
+const (  // iota is reset to 0
+	ErrorType_Install_Snapshot_Default ErrorTypeInstallSnapshot = iota  //  == 0
+	ErrorType_Install_Snapshot_LocalSnapshot_Is_Ahead ErrorTypeInstallSnapshot = iota  //  == 1
+)
+
+
 type InstallSnapshotReply struct {
 	Term		int
 	// currentTerm, for leader to update itself
 
 	Success bool
+
+	//
+	Error ErrorTypeInstallSnapshot
+
+	CommitIndex int
+	// used if Error==ErrorType_Install_Snapshot_LocalSnapshot_Is_Ahead
 }
 
 
@@ -1158,7 +1186,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				// Necessary to InstallSnapshot
 				reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 				//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
-				reply.BaseLogIndex = rf.baseIndex
+				reply.BaseLogIndex = max( rf.baseIndex, rf.lastApplied)
 				//if enable_warning_lab3b {
 				//	fmt.Println("Retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
 				//}
@@ -1585,6 +1613,18 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								} else {
 									if !rf.checkTermNoLessThan(reply.Term, serverIndex) {
 										return //break
+									}
+									if reply.Error == ErrorType_Install_Snapshot_LocalSnapshot_Is_Ahead {
+
+										if enable_warning_lab3b {
+											fmt.Println("Debug Point XXX: leader rf.baseIndex=", rf.baseIndex, "server commitIndex", reply.CommitIndex)
+										}
+										rf.nextIndex[serverIndex] = reply.CommitIndex + 1
+
+										if rf.nextIndex[serverIndex] - 1 > rf.getLastLogIndex() {
+											fmt.Println("Error: rf.nextIndex[serverIndex] over move.")
+										}
+
 									}
 									// the above should be the only case
 									return //break
@@ -2697,6 +2737,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// given code
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.InitInstallSnapshot()
 
 
 	rf.initHeartbeatSender()
@@ -2725,6 +2766,7 @@ func (rf *Raft) InitInstallSnapshot() {
 	Success, args := rf.makeInstallArgs()
 	if Success {
 		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, false)
+		rf.persist()
 	} else {
 		//fmt.Println("Error: Make(): makeInstallArgs() fails")
 	}

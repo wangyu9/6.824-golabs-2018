@@ -389,8 +389,16 @@ func (kv *KVServer) ApplyMsgListener() {
 				}
 
 				ch, ok := kv.pendingOps[op.ClientID][op.RequestID] // kv.pendingOps[op.ClientID] must exist, no need to worry about it.
-				kv.mu.Unlock()                                     // avoid deadlock
 				if ok {
+					go func() {
+						// TODO: cannot put this in a go routine since we need to be sure to get back to the client.
+						// this may cause duplicated entries.
+						// However I got deadlock without go routine. Figure out the reason.
+						ch <- op
+					}()
+				}
+				kv.mu.Unlock()                                     // avoid deadlock
+				/*if ok {
 					go func() {
 						// somehow need this to pass 3a linearizability.
 						select {
@@ -406,7 +414,7 @@ func (kv *KVServer) ApplyMsgListener() {
 							return
 						}
 					}()
-				}
+				}*/
 			}
 
 		} else {
@@ -525,6 +533,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan Op)
 	// kv.waitingOpChan = make(map[ServerSeqIndexType] chan Op)
 	kv.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
+
+	go kv.ApplyMsgListener() // put it before raft init
 	//
 
 	// Given code:
@@ -535,7 +545,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	//kv.takeSnapshot()
 
 	// You may need initialization code here.
-	go kv.ApplyMsgListener()
+
 
 	//if enable_lab_3b {
 	/*{
@@ -550,12 +560,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}*/
 
 	{
-		//maxraftstate = 1000 // TODO remove this later, change it back in final submission!!!
+		maxraftstate = 1000 // TODO remove this later, change it back in final submission!!!
 		kv.rf.SetMaxLogSize( maxraftstate )
 	}
 
-
-	kv.rf.InitInstallSnapshot()
 
 	return kv
 }
