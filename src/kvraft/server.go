@@ -396,6 +396,7 @@ func (kv *KVServer) ApplyMsgListener() {
 						case ch <- op:
 							return
 						case <-time.After((100 + TimeOutListenFromApplyCh) * time.Millisecond):
+							fmt.Println("Warning!!!! Ops are lost due to timing out.")
 							// save to close and delete ch, since Get/PutAppend has the same timeout amount and it must have returned already.
 							//kv.mu.Lock()
 							//kv.mu.Unlock()
@@ -546,7 +547,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}*/
 
 	{
-		maxraftstate = 100 // TODO remove this later
+		//maxraftstate = -1 // TODO remove this later
 		kv.rf.SetMaxLogSize( maxraftstate )
 	}
 

@@ -48,7 +48,7 @@ const HeartbeatTimeoutUpper = 400//700//400
 const ElectionTimeoutUpper = 400//700//400
 // wangyu: some design parameters:
 
-const verbose = 0
+
 
 const enable_lab_2b = true // must be true in final submission
 const enable_lab_2c = true
@@ -57,6 +57,7 @@ const enable_lab_3b = true
 const enable_log_compaction_test = false// this should be turned off for running kvraft.
 
 const enable_incrementing_output = false
+const verbose = 0//2
 const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
 
@@ -612,7 +613,7 @@ func (rf *Raft) readSnapshot(snapshotData []byte) {
 
 		Success, LastIncludedIndex, LastIncludedTerm, UpperData := rf.decodeSnapshotData(snapshotData)
 		if Success {
-			rf.applySnapshot(LastIncludedIndex, LastIncludedTerm, UpperData)
+			rf.applySnapshot(LastIncludedIndex, LastIncludedTerm, UpperData, true)
 		} else {
 			fmt.Println("Error: readSnapshot(): decodeSnapshotData() fails")
 		}
@@ -623,19 +624,43 @@ func (rf *Raft) readSnapshot(snapshotData []byte) {
 }
 
 
-func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upperData []byte) {
+func (rf *Raft) applyMsg(msg ApplyMsg) {
+
+	if msg.CommandValid {
+		rf.applyChan <- msg
+		rf.lastApplied = msg.CommandIndex
+		// update the last applied index. Only for valid command.
+	} else {
+		switch msg.Command.(type) {
+		case InstallSnapshotMsg:
+			rf.readSnapshot(msg.Command.(InstallSnapshotMsg).SnapshotData) // lastApplied and rf.applyChan <- msg is updated within.
+		default:
+			fmt.Println("Error: unknow command type!")
+		}
+	}
+
+}
+
+func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upperData []byte, overWittenLog bool) { // overWittenLog is critical
 	// protected by Lock()
 
-	rf.lastApplied = max(rf.lastApplied, LastIncludedIndex)
-	rf.commitIndex = max(rf.commitIndex, LastIncludedIndex)
 
-	rf.baseIndex = LastIncludedIndex
-
-	rf.currentTerm = max(rf.currentTerm, LastIncludedTerm)
-
-	rf.log = nil
-	rf.log = make([] LogEntry, 0)
-	rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
+	if overWittenLog {
+		// Used in case of Installing Snapshot.
+		rf.log = nil
+		rf.log = make([] LogEntry, 0)
+		rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
+		rf.currentTerm = max(rf.currentTerm, LastIncludedTerm)
+		rf.lastApplied = LastIncludedIndex// this is clearly wrong: max(rf.lastApplied, LastIncludedIndex)
+		rf.baseIndex = LastIncludedIndex
+		rf.commitIndex = LastIncludedIndex
+	} else {
+		// Over-written in case of recovery from Snapshot.
+		rf.currentTerm = LastIncludedTerm // this is wrong: max(rf.currentTerm, LastIncludedTerm)
+		rf.lastApplied = LastIncludedIndex// this is clearly wrong: max(rf.lastApplied, LastIncludedIndex)
+		rf.baseIndex = LastIncludedIndex
+		rf.commitIndex = LastIncludedIndex
+	}
 
 	if enable_log_compaction_test {
 
@@ -644,13 +669,13 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 			{
 
 				if use_apply_stack {
-					for i:=0; i<len(appliedLog); i++{
+					for i:=0; i<len(appliedLog); i++ {
 						rf.applyStack = append(rf.applyStack, appliedLog[i])
 					}
 				} else {
 
-					for i:=0; i<len(appliedLog); i++{
-						rf.applyChan <- appliedLog[i]
+					for i:=0; i<len(appliedLog); i++ {
+						rf.applyMsg(appliedLog[i])
 					}
 				}
 			}
@@ -671,6 +696,7 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 
+	fmt.Println("Entering InstallSnapshot()")
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -696,7 +722,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 		// whenever set currentTerm, clear voteFor
 		rf.currentTerm = args.Term
-		rf.votedFor = -1
+		rf.votedFor = args.LeaderID // so it accepts the leader and will not for others //-1
 		needPersist = true
 
 		if rf.serverState == SERVER_STATE_LEADER {
@@ -721,12 +747,16 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	{ // code outside this blanket are copied and pasted from AppendEntries, with comments
 	// and unnecessary parts removed.
-		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
+		// doing this is not right: rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, true)
+		msg := ApplyMsg{false, InstallSnapshotMsg{args.Data},-1}
+		rf.applyMsg(msg)
 		needPersist = true
 	}
 
 
 	rf.heartbeatsChan <- true
+
+	fmt.Println("Exiting InstallSnapshot()")
 }
 //
 // example RequestVote RPC arguments structure.
@@ -770,6 +800,9 @@ func (rf *Raft) getLogTerm(index int) (int) {
 	if index == -1 {
 		return -1
 	} else {
+		if rf.getLogDisp(index)>=len(rf.log) {
+			fmt.Println("Error: index out of range, index=", index, "len(rf.log)=", len(rf.log))
+		}
 		return rf.log[rf.getLogDisp(index)].LogTerm
 	}
 }
@@ -1013,6 +1046,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		return
 	}
 
+
 	// starting from here
 	// args.Term >= rf.currentTerm is true
 
@@ -1025,7 +1059,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 		}
 		// whenever set currentTerm, clear voteFor
 		rf.currentTerm = args.Term
-		rf.votedFor = -1
+		rf.votedFor = args.LeaderID // so it accepts the leader and will not for others //-1
 		if enable_lab_2c {
 			needPersist = true
 		}
@@ -1213,7 +1247,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						if use_apply_stack {
 							rf.applyStack = append(rf.applyStack, msg)
 						} else {
-							rf.applyChan <- msg
+							rf.applyMsg(msg)
 						}
 					}
 
@@ -1379,7 +1413,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 
-func (rf *Raft) checkTermNoLessThan(term int) (bool) {
+func (rf *Raft) checkTermNoLessThan(term int, potentialLeaderID int) (bool) {
 	termNoLessThan := true
 	// TODO optional: consider make this a checkTermNoLessThan fun
 	if rf.currentTerm < term {
@@ -1388,7 +1422,7 @@ func (rf *Raft) checkTermNoLessThan(term int) (bool) {
 		//	fmt.Println("Server", rf.me, "trySendAppendEntriesRecursively(): Increamenting current term from", rf.currentTerm, "to", args.Term)
 		}
 		rf.currentTerm = term
-		rf.votedFor = -1
+		rf.votedFor = potentialLeaderID //so if will not voted for anyone -1
 		switch rf.serverState {
 		case SERVER_STATE_FOLLOWER:
 		case SERVER_STATE_CANDIDATE:
@@ -1406,6 +1440,10 @@ func (rf *Raft) checkTermNoLessThan(term int) (bool) {
 
 func (rf *Raft) makeInstallArgs () (Success bool, args InstallSnapshotArgs) {
 	snapshotData := rf.persister.ReadSnapshot()
+	if snapshotData == nil || len(snapshotData) < 1 { // bootstrap without any state?
+		Success = false
+		return Success, args
+	}
 	Success, LastIncludedIndex, LastIncludedTerm, UpperData := rf.decodeSnapshotData(snapshotData)
 	//args := InstallSnapshotArgs{}
 	if Success {
@@ -1436,7 +1474,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 	//fmt.Println("trySendAppendEntriesRecursively(): server",serverIndex,"step 1.")
 	//}
 
-	for {
+	for iter:=0; iter<20; iter++{
 
 		//fmt.Println(".")
 
@@ -1444,7 +1482,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 			//term := rf.currentTerm
 			//state := rf.serverState
-			prevLogIndex := rf.nextIndex[serverIndex]-1
+			var prevLogIndex int
+			prevLogIndex = rf.nextIndex[serverIndex]-1
+			fmt.Println("prevLogIndex=",prevLogIndex)
 
 
 			if enable_lab_3b {
@@ -1452,14 +1492,17 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 				if prevLogIndex < rf.baseIndex {
 					// then necessary to install snapshot first.
 
-					//fmt.Println("do not expect the experiment to pass")
+					fmt.Println("prevLogIndex=", prevLogIndex, "is missing from current compacted log with base=", rf.baseIndex)
 
+
+					//oldBaseIndex := rf.baseIndex
 
 					{
 						Success, args := rf.makeInstallArgs()
+						fmt.Println("InstallArgs.LastIncludedIndex=", args.LastIncludedIndex)
 						if !Success {
 							fmt.Println("Error: trySendAppendEntriesRecursively(): decodeSnapshotData() fails")
-							break
+							return //break
 						}
 
 						rf.mu.Unlock()
@@ -1467,6 +1510,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 						reply := InstallSnapshotReply{}
 						ok := rf.peers[serverIndex].Call("Raft.InstallSnapshot", &args, &reply)
+						// rf.baseIndex may have changed during the gap!
 
 						rf.mu.Lock()
 
@@ -1476,20 +1520,22 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							if ok {
 								if reply.Success {
 
-									rf.nextIndex[serverIndex] = rf.baseIndex + 1 // important to have this!!!
+									rf.nextIndex[serverIndex] = args.LastIncludedIndex + 1 // This is wrong oldBaseIndex + 1 // important to have this!!!
 									rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 
-									prevLogIndex = rf.baseIndex
+									prevLogIndex = rf.nextIndex[serverIndex] - 1
+
+									fmt.Println("Sending InstallSnapshot Successfully: nextIndex=",rf.nextIndex, "prevLogIndex=",prevLogIndex)
 
 								} else {
-									if !rf.checkTermNoLessThan(reply.Term) {
-										break
+									if !rf.checkTermNoLessThan(reply.Term, serverIndex) {
+										return //break
 									}
 									// the above should be the only case
-									break
+									return //break
 								}
 							} else {
-								break
+								return //break
 							}
 						}
 
@@ -1508,8 +1554,15 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			}
 
 
+			fmt.Println("prevLogIndex=",prevLogIndex)
 			if prevLogIndex<rf.baseIndex {
-				fmt.Println("ERROR: prevLogIndex=",prevLogIndex, "rf.baseIndex=",rf.baseIndex)
+				// fmt.Println("This can happen: prevLogIndex=",prevLogIndex, "rf.baseIndex=",rf.baseIndex)
+				// This is definitely possible, since rf.baseIndex may increase since oldBaseIndex
+				continue
+			}
+
+			if prevLogIndex == 52 {
+				fmt.Println("Debug point")
 			}
 
 			prevLogTerm := rf.getLogTerm(prevLogIndex)
@@ -1551,13 +1604,13 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 				if ok {
 					if reply.Success {
 
-						if verbose >0 || enable_debug_lab_2b {
+						//if verbose >0 || enable_debug_lab_2b {
 							fmt.Println("Leader", rf.me, "succeeded to append entries [", args.PrevLogIndex+1,
 								",", args.PrevLogIndex+1+len(entries), ") to server", serverIndex, ".")
 							for i := 0; i < len(entries); i++ {
 								fmt.Println("Entry", entries[i])
 							}
-						}
+						//}
 
 						rf.nextIndex[serverIndex] += len(entries)
 						rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
@@ -1572,12 +1625,12 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							rf.commitCheckerTriggerChan <- true
 						}()
 
-						break
+						return //break
 					} else {
 
-						if verbose > 0 {
+						//if verbose > 0 {
 							fmt.Println("Leader", rf.me, "failed to append entries to server", serverIndex, ".")
-						}
+						//}
 
 						if reply.Error == ErrorType_AppendEntries_NO_LOG_WITH_INDEX ||
 							reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ||
@@ -1585,6 +1638,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 							if reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
 								fmt.Println("Debug Point XXX: rf.baseIndex=", rf.baseIndex, "FirstIndexOfConflictTerm", reply.FirstIndexOfConflictTerm)
+								return
 							}
 
 							// Retreat
@@ -1657,14 +1711,14 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 							// Especially, for TestFailAgree2B, an offline server becoming back online needs to
 							// use this to force the leader quit, and re-elect later.
 
-							if !rf.checkTermNoLessThan(reply.Term) {
-								break
+							if !rf.checkTermNoLessThan(reply.Term, serverIndex) {
+								return //break
 							}
 						} else {
 							//if enable_debug_lab_2b {
 								fmt.Println("ERROR: not implemented!!!!!!!!!!!!!!!!")
 							//}
-							break
+							return //break
 						}
 
 
@@ -1673,15 +1727,15 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 					if verbose >0 || enable_debug_lab_2b {
 						fmt.Println("Leader", rf.me, "failed to call Raft.AppendEntries", args.PrevLogIndex+1, "to server", serverIndex, ".")
 					}
-					break// important to break here.
+					return //break// important to break here.
 				}
 			} else {
-				break
+				return //break
 			}
 
 		} else{
 			// This goroutine is already out-of-date.
-			break
+			return //break
 		}
 
 
@@ -1860,7 +1914,8 @@ func (rf *Raft) stateCandidateToLeader() {
 	// Notify all other servers.
 	for i,_ := range rf.peers {
 		if i!= rf.me {
-			go func(index int){
+			go func(index int) {
+				//fmt.Println("New leader", rf.me, "sends to", index, "stateCandidateToLeader(): index")
 				rf.trySendAppendEntriesRecursively(index, term)// i is sent in.
 			} (i)
 		}
@@ -2036,14 +2091,18 @@ func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 						if false {  // this does not work to pass 2A ReElect, which I do not understand.
 							rf.mu.Lock()
 							term := rf.currentTerm
+							state := rf.serverState
 							rf.mu.Unlock()
-							go func(serverIndex int) {
-								if enable_debug_lab_2c {
-									fmt.Println("Server", rf.me, "initHeartbeatSender(): for", serverIndex)
-								}
-								rf.trySendAppendEntriesRecursively(serverIndex, term)
-								// must pass serverIndex in this way, I have been stuck on this bug.
+							if state == SERVER_STATE_LEADER {
+								go func(serverIndex int) {
+								//{serverIndex := index
+									if enable_debug_lab_2c {
+										fmt.Println("Server", rf.me, "initHeartbeatSender(): for", serverIndex)
+									}
+									rf.trySendAppendEntriesRecursively(serverIndex, term)
+									// must pass serverIndex in this way, I have been stuck on this bug.
 								}(index)
+							}
 						} else {
 						go func(index int) {
 
@@ -2107,7 +2166,7 @@ func (rf *Raft) initHeartbeatSender(){ //exitChan chan bool
 												go rf.trySendAppendEntriesRecursively(index, term)
 											} else if reply.Error == ErrorTypeAppendEntries_REJECT_BY_HIGHER_TERM {
 												rf.mu.Lock()
-												rf.checkTermNoLessThan(reply.Term)
+												rf.checkTermNoLessThan(reply.Term, index)
 												rf.mu.Unlock()
 											} else {
 												if enable_debug_lab_2b {
@@ -2428,6 +2487,7 @@ func (rf *Raft) startCommitChecker() {
 
 		for i:= 0; i<len(rf.peers); i++ {
 			//rf.peerBeingAppend[i].Lock()
+			// TODO: think about if it is necessary for trysendappendentries !!
 		}
 
 		// fmt.Println("startCommitChecker() step 1")
@@ -2483,7 +2543,7 @@ func (rf *Raft) startCommitChecker() {
 					if use_apply_stack {
 						rf.applyStack = append(rf.applyStack, msg)
 					} else {
-						rf.applyChan <- msg
+						rf.applyMsg(msg)
 					}
 				}
 
@@ -2605,7 +2665,7 @@ func (rf *Raft) InitInstallSnapshot() {
 	// fmt.Println("InitInstallSnapshot()")
 	Success, args := rf.makeInstallArgs()
 	if Success {
-		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
+		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, false)
 	} else {
 		//fmt.Println("Error: Make(): makeInstallArgs() fails")
 	}
