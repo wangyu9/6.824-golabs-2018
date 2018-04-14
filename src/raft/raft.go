@@ -65,6 +65,8 @@ const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
 
+const persist_commit_index = false // This must be false!!, otherwise 3A restarts will not commit entries.
+
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
 	// fmt.Println(r)
@@ -334,6 +336,9 @@ func (rf *Raft) dataBytesToPersist() ([]byte) {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
 	e.Encode(rf.baseIndex)
+	if persist_commit_index {
+		e.Encode(rf.commitIndex)
+	}
 	data := w.Bytes()
 	return data
 }
@@ -398,12 +403,14 @@ func (rf *Raft) readPersist(data []byte) {
 		var votedFor int
 		var log [] LogEntry
 		var baseIndex int
+		var commitIndex int
 
 
 		if d.Decode(&currentTerm) != nil ||
 			d.Decode(&votedFor) != nil ||
 				d.Decode(&log) != nil ||
-					d.Decode(&baseIndex) != nil{
+					d.Decode(&baseIndex) != nil ||
+			(persist_commit_index && d.Decode(&commitIndex) != nil) {
 				fmt.Println("readPersist() fails.")
 		} else {
 
@@ -413,6 +420,9 @@ func (rf *Raft) readPersist(data []byte) {
 			rf.votedFor = votedFor
 			rf.log = log
 			rf.baseIndex = baseIndex
+			if persist_commit_index {
+				rf.commitIndex = commitIndex
+			}
 			//fmt.Println("readPersist() succeeds.")
 
 			//fmt.Println("currentTerm:", rf.currentTerm)
@@ -661,16 +671,27 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		rf.log = nil
 		rf.log = make([] LogEntry, 0)
 		rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
-		rf.currentTerm = max(rf.currentTerm, LastIncludedTerm)
+		rf.currentTerm = max(rf.currentTerm, LastIncludedTerm) // not necessary, but does not hurt.
 		rf.lastApplied = LastIncludedIndex// this is clearly wrong: max(rf.lastApplied, LastIncludedIndex)
 		rf.baseIndex = LastIncludedIndex
+		if rf.commitIndex >LastIncludedIndex {
+			fmt.Println("Error 101: applySnapshot() this should not happen!!")
+		}
 		rf.commitIndex = LastIncludedIndex
+		// remember to persist, after applySnapshot(), did not do it here to prevent double persist
 	} else {
 		// Over-written in case of recovery from Snapshot.
-		rf.currentTerm = LastIncludedTerm // this is wrong: max(rf.currentTerm, LastIncludedTerm)
-		rf.lastApplied = LastIncludedIndex// this is clearly wrong: max(rf.lastApplied, LastIncludedIndex)
+		if rf.currentTerm < LastIncludedTerm {
+			fmt.Println("Error 102: applySnapshot() this should not happen!!")
+		}
+		rf.currentTerm = max(rf.currentTerm, LastIncludedTerm)  //  // this is clearly wrong: rf.currentTerm = LastIncludedTerm
+		rf.lastApplied = LastIncludedIndex// rf.lastApplied was 0 since not persisted
 		rf.baseIndex = LastIncludedIndex
-		rf.commitIndex = LastIncludedIndex
+		//if rf.commitIndex < LastIncludedIndex {
+		//	fmt.Println("This can also happen!!")// This can also happen since rf.commitIndex is not persisted.
+		//}
+		rf.commitIndex = max( rf.commitIndex, LastIncludedIndex) // This is necessary, either one can be larger!!!
+		// OK not to persist
 	}
 
 	if enable_log_compaction_test {
@@ -703,6 +724,7 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 			rf.applyChan <- msg
 		}
 	}
+
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -981,6 +1003,9 @@ type AppendEntriesReply struct {
 
 	LastLogIndex int
 	// used only if Error==ErrorType_AppendEntries_NO_LOG_WITH_INDEX
+
+	BaseLogIndex int
+	// used only if Error==ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 }
 
 
@@ -1122,14 +1147,21 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 			} else if enable_lab_3b && rf.getLogDisp(args.PrevLogIndex)<0 {
 				// 2.2e log does contain an entry at prevLogIndex before, but it has been compacted.
+				// This can happen, in case of snapshot recovery, however commit index is not persisted.
+				// Since the leader may use an out-of-date commit index. This should be ok and not causing inconsistencies,
+				// but InstallSnapshot needs to be called first.
+				// When a new leader is elected, its committed index must be ahead of the commitIndex of the majority of servers
+				// but not every server, so this can happen!
+				// In this case, if nothing is done and just waiting until the leader to catch up to date, it may never happen
+				// if the leader does not compacted its log. Triggering an InstallSnapshot is an overkill.
 				reply.Success = false
 				// Necessary to InstallSnapshot
 				reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 				//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
-				reply.FirstIndexOfConflictTerm = rf.baseIndex
-				if enable_warning_lab3b {
-					fmt.Println("Fattal Error()1: AppendEntries(), never should retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
-				}
+				reply.BaseLogIndex = rf.baseIndex
+				//if enable_warning_lab3b {
+				//	fmt.Println("Retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
+				//}
 			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {//TODO
 				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
 				reply.Success = false
@@ -1270,6 +1302,10 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 						} else {
 							rf.applyMsg(msg)
 						}
+					}
+
+					if persist_commit_index {
+						needPersist = true
 					}
 
 					/*if enable_lab_3b {
@@ -1653,9 +1689,10 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 							if reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
 								if enable_warning_lab3b {
-									fmt.Println("Debug Point XXX: rf.baseIndex=", rf.baseIndex, "FirstIndexOfConflictTerm", reply.FirstIndexOfConflictTerm)
+									fmt.Println("Debug Point XXX: leader rf.baseIndex=", rf.baseIndex, "server baseIndex", reply.BaseLogIndex)
 								}
-								return
+								rf.nextIndex[serverIndex] = reply.BaseLogIndex + 1
+								continue
 							}
 
 							// Retreat
@@ -1673,8 +1710,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								}
 							} else {
 
-								if reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM ||
-									reply.Error == ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION {
+								if reply.Error == ErrorType_AppendEntries_LOG_WITH_WRONG_TERM {
 									// Retreat more than 1 as suggested in the lecture
 									nI := rf.nextIndex[serverIndex]-1
 									//for ; nI>=1+rf.baseIndex; nI-- {
@@ -2579,6 +2615,10 @@ func (rf *Raft) startCommitChecker() {
 				rf.commitIndex = N
 			}
 
+		}
+
+		if persist_commit_index {
+			rf.persist()
 		}
 
 		rf.mu.Unlock()
