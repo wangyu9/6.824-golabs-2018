@@ -65,7 +65,7 @@ const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
 
-const persist_commit_index = true
+const persist_commit_index = false
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
