@@ -2794,13 +2794,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 
-	rf.mu.Lock()
 	// given code
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.InitInstallSnapshot()
 
-	rf.mu.Unlock()
 
 
 	rf.initHeartbeatSender()
@@ -2827,6 +2825,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) InitInstallSnapshot() {
 	// fmt.Println("InitInstallSnapshot()")
 
+	rf.mu.Lock()
+
 	Success, args := rf.makeInstallArgs()
 	if Success {
 		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, false)
@@ -2838,19 +2838,20 @@ func (rf *Raft) InitInstallSnapshot() {
 
 	// Important: replaying the log!!! what I missed before!!!
 
-	//fmt.Println("Replaying: log size =", len(rf.log))
+	fmt.Println("Replaying: log size =", len(rf.log), "from", rf.baseIndex, "to", rf.lastApplied)
 
 	for i := rf.baseIndex+1; i <= rf.lastApplied; i++ {
 		msg := ApplyMsg{true, rf.getLog(i).Command, i}
 		// rf.applyMsg(msg) // this also updates rf.lastApplied within it.
 		rf.applyChan <- msg
-		rf.lastApplied = msg.CommandIndex
 	}
 
 	fmt.Println("Initialization of log server:", rf.me)
 	rf.printLog()
 
 	rf.persist()
+
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) clearApplyStack() {
