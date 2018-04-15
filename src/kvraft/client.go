@@ -186,7 +186,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 		// Sleep some time, since probably need to wait for network healing or leader re-election.
 		// Should not give up after certain number of trails since the lab3 tester ask for a result.
-		time.Sleep(1*time.Millisecond)
+		time.Sleep(200*time.Millisecond)
 	}
 }
 

@@ -235,9 +235,9 @@ func (kv *KVServer) tryApplyPutAppend(op *Op) {
 
 	} else {
 		// the op is duplicated, but still reply ok
-		//if debug_getputappend {
+		if debug_getputappend {
 			fmt.Println("Duplicated to PutAppend", op)
-		//}
+		}
 	}
 
 }
@@ -563,7 +563,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}*/
 
 	{
-		//maxraftstate = 1000 // TODO remove this later, change it back in final submission!!!
+		maxraftstate = 1000 // TODO remove this later, change it back in final submission!!!
 
 		kv.rf.SetMaxLogSize( maxraftstate )
 	}

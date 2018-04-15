@@ -487,6 +487,10 @@ func (rf *Raft) LogCompactionStart() {
 
 	//fmt.Println("LogCompactionStart(): initialized")
 
+
+	oldcommitIndex := rf.commitIndex
+	rf.applyCommittedLog(oldcommitIndex)
+
 	// never do go routine around this.
 	msg := ApplyMsg{false, SaveSnapshotMsg{}, -1}
 
@@ -1213,6 +1217,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				if enable_warning_lab3b {
 					fmt.Println("Retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
 				}
+				if persist_commit_index {
+					fmt.Println("This is an fattal error!")
+				}
 			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {//TODO
 				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
 				reply.Success = false
@@ -1334,26 +1341,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 					// Send newly committed entries to the applyCh
 
-					msgs := make([]ApplyMsg, 0)
-
-					for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
-						if i<= rf.baseIndex {
-							continue
-						}
-						msg := ApplyMsg{true, rf.getLog(i).Command, i}
-						msgs = append(msgs, msg)
-
-
-						if enable_debug_lab_2b {
-							fmt.Println("Server", rf.me, "committed entry", msg)
-						}
-
-						if use_apply_stack {
-							rf.applyStack = append(rf.applyStack, msg)
-						} else {
-							rf.applyMsg(msg)
-						}
-					}
+					rf.applyCommittedLog(oldCommitIndex)
 
 					if persist_commit_index {
 						needPersist = true
@@ -1395,6 +1383,29 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 	// fmt.Println("Server ", rf.me," received heartbeat msg from the leader.")
 
 
+}
+
+func (rf *Raft) applyCommittedLog (oldCommitIndex int) {
+	msgs := make([]ApplyMsg, 0)
+
+	for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
+		if i<= rf.baseIndex {
+			continue
+		}
+		msg := ApplyMsg{true, rf.getLog(i).Command, i}
+		msgs = append(msgs, msg)
+
+
+		if enable_debug_lab_2b {
+			fmt.Println("Server", rf.me, "committed entry", msg)
+		}
+
+		if use_apply_stack {
+			rf.applyStack = append(rf.applyStack, msg)
+		} else {
+			rf.applyMsg(msg)
+		}
+	}
 }
 
 //
@@ -1642,6 +1653,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 										if enable_warning_lab3b {
 											fmt.Println("Debug Point XXX: leader rf.baseIndex=", rf.baseIndex, "server commitIndex", reply.CommitIndex)
+										}
+										if persist_commit_index {
+											fmt.Println("This is an fattal error!")
 										}
 
 										rf.nextIndex[serverIndex] = reply.CommitIndex + 1
@@ -2806,11 +2820,13 @@ func (rf *Raft) InitInstallSnapshot() {
 
 	// Important: replaying the log!!! what I missed before!!!
 
-	fmt.Println("Replaying: log size =", len(rf.log))
+	//fmt.Println("Replaying: log size =", len(rf.log))
 
 	for i := rf.baseIndex+1; i <= rf.lastApplied; i++ {
 		msg := ApplyMsg{true, rf.getLog(i).Command, i}
-		rf.applyMsg(msg)
+		// rf.applyMsg(msg) // this also updates rf.lastApplied within it.
+		rf.applyChan <- msg
+		rf.lastApplied = msg.CommandIndex
 	}
 
 	rf.persist()
