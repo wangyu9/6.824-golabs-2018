@@ -447,7 +447,7 @@ func (kv *KVServer) ApplyMsgListener() {
 						//Success = false
 					} else {
 						//Success = true
-						//fmt.Println("Decoded Database:", kv.database)
+						fmt.Println("Decoded Database:", kv.database)
 					}
 
 					kv.mu.Unlock()
@@ -499,7 +499,7 @@ func (kv *KVServer) encodeDatabase() (upperData []byte) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
-	//fmt.Println("Encoded Database:", kv.database)
+	fmt.Println("Encoded Database:", kv.database)
 
 	e.Encode(kv.database)
 	e.Encode(kv.mostRecentWrite)

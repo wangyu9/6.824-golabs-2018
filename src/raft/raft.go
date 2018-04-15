@@ -515,9 +515,11 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 
 	rf.persist()
 
+	fmt.Println("LogCompactionEnd(): ")
+	rf.printLog()
+
 	rf.mu.Unlock()
 
-	fmt.Println("LogCompactionEnd(): ")
 }
 
 func (rf *Raft) decodeAppliedLog(upperData []byte) (Success bool, appliedLog []ApplyMsg) {
@@ -919,6 +921,12 @@ func (rf *Raft) deleteLogSince(index int) () {
 	rf.log = rf.log[0:(rf.getLogDisp(index))]
 }
 
+func (rf *Raft) printLog() {
+	fmt.Println("Current log:  baseIndex=", rf.baseIndex)
+	for i := 0; i < len(rf.log); i++ {
+		fmt.Println(rf.log[i])
+	}
+}
 
 //
 // example RequestVote RPC handler.
@@ -1279,10 +1287,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 								for i := 0; i < len(args.Entries); i++ {
 									fmt.Println("Entry appended", args.Entries[i])
 								}
-								fmt.Println("Current log:")
-								for i := 0; i < len(rf.log); i++ {
-									fmt.Println(rf.log[i])
-								}
+								rf.printLog()
 							}
 
 
@@ -2829,6 +2834,9 @@ func (rf *Raft) InitInstallSnapshot() {
 		rf.applyChan <- msg
 		rf.lastApplied = msg.CommandIndex
 	}
+
+	fmt.Println("Initialization")
+	rf.printLog()
 
 	rf.persist()
 }
