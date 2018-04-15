@@ -517,7 +517,7 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 
 	rf.mu.Unlock()
 
-	//fmt.Println("LogCompactionEnd(): ")
+	fmt.Println("LogCompactionEnd(): ")
 }
 
 func (rf *Raft) decodeAppliedLog(upperData []byte) (Success bool, appliedLog []ApplyMsg) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 	"bytes"
+	"strconv"
 )
 
 const Debug = 0
@@ -146,6 +147,10 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			kv.mu.Lock()
 
 			dataHandler(&op, reply)
+
+			if op.Key == strconv.Itoa(0){
+				fmt.Println("Get:----", op.Value)
+			}
 
 			kv.mu.Unlock()
 
@@ -312,9 +317,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 			dataHandler(&op, reply)
 
+			if op.Key == strconv.Itoa(0){
+				fmt.Println("PutAppend:----",args.Op," ", op.Value)
+			}
+
 			kv.mu.Unlock()
 
 			reply.Err = OK
+
 
 		} else {
 			reply.WrongLeader = true
