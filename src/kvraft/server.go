@@ -371,7 +371,6 @@ func (kv *KVServer) Kill() {
 	kv.mu.Lock()
 	fmt.Println("Kill() KVserver: server=", kv.me)
 	fmt.Println("Decoded Database:", kv.database,"\n")
-
 	kv.mu.Unlock()
 }
 
