@@ -311,6 +311,9 @@ type Raft struct {
 
  	// used for 3b
 	maxlogsize int
+
+
+	logCompactionInitialized bool
 }
 
 // return currentTerm and whether this server
@@ -364,10 +367,10 @@ func (rf *Raft) persist() {
 		rf.persister.SaveRaftState(rf.dataBytesToPersist())
 	}
 
-	if enable_lab_3b {
-		go func() {
-			rf.LogCompactionStart()
-		}()
+	if enable_lab_3b && !rf.logCompactionInitialized {
+		if rf.logCompactionCondition() {
+			go rf.LogCompactionStart()
+		}
 	}
 }
 
@@ -468,10 +471,16 @@ func (rf *Raft) FakeLogCompaction() { // TODO: remove this later
 }
 
 
+func (rf *Raft) logCompactionCondition() (bool) {
+	return !(rf.maxlogsize < 10 || rf.persister.RaftStateSize() < rf.maxlogsize)
+}
+
 // used only if enable_incrementing_output==true
 func (rf *Raft) LogCompactionStart() {
 	// this function can be called by either raft or the upper layer (kvraft)
 	rf.mu.Lock()
+
+	rf.logCompactionInitialized = true
 
 	//fmt.Println("LogCompactionStart(): entered")//, rf.maxlogsize, len(rf.log))
 
@@ -479,7 +488,7 @@ func (rf *Raft) LogCompactionStart() {
 		rf.clearApplyStack()
 	}
 
-	if rf.maxlogsize < 10 || rf.persister.RaftStateSize() < rf.maxlogsize {
+	if !rf.logCompactionCondition() {
 	//if rf.maxlogsize<10 || len(rf.log) < rf.maxlogsize {
 		// TODO: this is just a necessary but not sufficient condition to apply log compaction
 		rf.mu.Unlock()
@@ -491,7 +500,8 @@ func (rf *Raft) LogCompactionStart() {
 	// conservatively apply all the committed index.
 	oldcommitIndex := rf.commitIndex
 	rf.applyCommittedLog(oldcommitIndex)
-	rf.persist()
+	// rf.persist()
+	rf.persister.SaveRaftState(rf.dataBytesToPersist())
 
 	// never do go routine around this.
 	msg := ApplyMsg{false, SaveSnapshotMsg{}, -1}
@@ -514,13 +524,16 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 
 	rf.takeSnapshot(upperData)
 
-	rf.persist()
+	//rf.persist()
+	rf.persister.SaveRaftState(rf.dataBytesToPersist())
 
 	if enable_debug_lab_3b2 {
 		fmt.Println("LogCompactionEnd(): server=", rf.me)
 		rf.printLog()
 	}
 
+
+	rf.logCompactionInitialized = false
 	rf.mu.Unlock()
 
 }
@@ -671,9 +684,9 @@ func (rf *Raft) applyMsg(msg ApplyMsg) {
 		rf.applyChan <- msg
 		rf.lastApplied = msg.CommandIndex
 		// update the last applied index. Only for valid command.
-		if persist_commit_index {
-			rf.persist()
-		}
+		//if persist_commit_index {
+		//	rf.persist()
+		//}
 
 	} else {
 		switch msg.Command.(type) {
@@ -1423,6 +1436,7 @@ func (rf *Raft) applyCommittedLog (oldCommitIndex int) {
 			rf.applyMsg(msg)
 		}
 	}
+
 }
 
 //
