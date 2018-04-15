@@ -62,11 +62,11 @@ const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
 const enable_debug_lab_3b = false
 const enable_debug_lab_3b2 = false
-const enable_warning_lab3b = true//false
+const enable_warning_lab3b = false
 
 const use_apply_stack = false
 
-const persist_commit_index = false
+const persist_commit_index = false // I think false is more robust.
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
@@ -1254,9 +1254,12 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				reply.BaseLogIndex = max( rf.baseIndex, rf.lastApplied)
 				if enable_warning_lab3b {
 					fmt.Println("Retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
-				}
-				if persist_commit_index {
-					fmt.Println("This is an fattal error!")
+					if persist_commit_index {
+						fmt.Println("This is an fattal error!")
+					} else
+					{
+						// This is alright
+					}
 				}
 			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {//TODO
 				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
@@ -1693,7 +1696,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 									}
 									if reply.Error == ErrorType_Install_Snapshot_LocalSnapshot_Is_Ahead {
 
-										if enable_warning_lab3b {
+										if enable_debug_lab_3b {
 											fmt.Println("Debug Point XXX: leader rf.baseIndex=", rf.baseIndex, "server commitIndex", reply.CommitIndex)
 										}
 										if persist_commit_index {
