@@ -1140,9 +1140,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 
 	defer func() {
 		if enable_lab_3b {
-			if rf.logCompactionCondition() && !rf.logCompactionInitialized {
-				rf.LogCompactionStart()
-			}
+			rf.LogCompactionStart()
 		}
 	}()
 
@@ -1567,9 +1565,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.mu.Unlock()
 
 		if enable_lab_3b {
-			if rf.logCompactionCondition() && !rf.logCompactionInitialized {
-				rf.LogCompactionStart()
-			}
+			rf.LogCompactionStart()
 		}
 	}
 
