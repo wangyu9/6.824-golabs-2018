@@ -557,11 +557,13 @@ func (rf *Raft) takeSnapshot(upperData []byte) {
 
 	newLog := make([] LogEntry, 0)
 	if rf.getLogDisp(rf.lastApplied)>=1 {
-		newLog = rf.log[(rf.getLogDisp(rf.lastApplied)+1):] // log[0] is always a place holder, so it should not be copied.
+		newLog = rf.log[rf.getLogDisp(rf.lastApplied):] // setting this right is critical // log[0] is always a place holder, so it should not be copied.
 		rf.log = nil
 		rf.log = make([] LogEntry, 0)
-		rf.log = append(rf.log, LogEntry{LastIncludedTerm, nil}) // Place holder
 		rf.log = append(rf.log, newLog...)
+		rf.log[0].LogTerm = LastIncludedTerm
+		rf.log[0].Command = nil // recover Place holder
+
 		rf.baseIndex = rf.lastApplied
 	}
 
@@ -651,6 +653,7 @@ func (rf *Raft) applyMsg(msg ApplyMsg) {
 		rf.applyChan <- msg
 		rf.lastApplied = msg.CommandIndex
 		// update the last applied index. Only for valid command.
+
 	} else {
 		switch msg.Command.(type) {
 		case InstallSnapshotMsg:
@@ -686,7 +689,8 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		rf.commitIndex = LastIncludedIndex
 		// remember to persist, after applySnapshot(), did not do it here to prevent double persist
 	} else {
-		// Over-written in case of recovery from Snapshot.
+		// Over-written in case of recovery from Snapshot.,
+		// TODO recovery is to recover to an earlier ?
 		if rf.currentTerm < LastIncludedTerm {
 			fmt.Println("Error 102: applySnapshot() this should not happen!!")
 		}
@@ -697,7 +701,7 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		if rf.commitIndex != 0 {
 			fmt.Println("Error 103: applySnapshot() this should not happen!!")
 		}
-		rf.commitIndex = LastIncludedIndex // This is necessary, either one can be larger!!!
+		rf.commitIndex = LastIncludedIndex // commitIndex may go backward in time, since replaying is necessary.
 		// OK not to persist
 	}
 
@@ -1189,9 +1193,9 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 				//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
 				reply.BaseLogIndex = max( rf.baseIndex, rf.lastApplied)
-				//if enable_warning_lab3b {
-				//	fmt.Println("Retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
-				//}
+				if enable_warning_lab3b {
+					fmt.Println("Retreat to a compacted entry which has been applied. args.PrevLogIndex=", args.PrevLogIndex, "rf.baseIndex=", rf.baseIndex)
+				}
 			} else if rf.getLogTerm(args.PrevLogIndex)!=args.PrevLogTerm {//TODO
 				// 2.2 log does contain an entry at prevLogIndex, whose term does not match prevLogTerm
 				reply.Success = false
@@ -1605,8 +1609,8 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 								if reply.Success {
 
 									rf.nextIndex[serverIndex] = args.LastIncludedIndex + 1 // This is wrong oldBaseIndex + 1 // important to have this!!!
-									rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 
+									rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 									prevLogIndex = rf.nextIndex[serverIndex] - 1
 
 									if enable_debug_lab_3b {
@@ -1621,7 +1625,11 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 										if enable_warning_lab3b {
 											fmt.Println("Debug Point XXX: leader rf.baseIndex=", rf.baseIndex, "server commitIndex", reply.CommitIndex)
 										}
+
 										rf.nextIndex[serverIndex] = reply.CommitIndex + 1
+
+										rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
+										prevLogIndex = rf.nextIndex[serverIndex] - 1
 
 										if rf.nextIndex[serverIndex] - 1 > rf.getLastLogIndex() {
 											fmt.Println("Error: rf.nextIndex[serverIndex] over move.")
@@ -1734,6 +1742,7 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 									fmt.Println("Debug Point XXX: leader rf.baseIndex=", rf.baseIndex, "server baseIndex", reply.BaseLogIndex)
 								}
 								rf.nextIndex[serverIndex] = reply.BaseLogIndex + 1
+								rf.matchIndex[serverIndex] = rf.nextIndex[serverIndex] - 1
 								continue
 							}
 
@@ -1993,7 +2002,7 @@ func (rf *Raft) stateCandidateToLeader() {
 			// Initialized to the leader's last log index + 1 = len(rf.log)-1 + 1 = len(rf.log)
 			rf.nextIndex[i] = rf.getLastLogIndex() + 1
 
-			rf.matchIndex[i] = 0
+			rf.matchIndex[i] = 0 // cannot do rf.baseIndex
 		}
 
 	}
@@ -2802,5 +2811,7 @@ func (rf *Raft) clearApplyStack() {
 
 func (rf *Raft) SetMaxLogSize(size int) {
 
+	rf.mu.Lock()
 	rf.maxlogsize = size
+	rf.mu.Unlock()
 }

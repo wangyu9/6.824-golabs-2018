@@ -235,9 +235,9 @@ func (kv *KVServer) tryApplyPutAppend(op *Op) {
 
 	} else {
 		// the op is duplicated, but still reply ok
-		if debug_getputappend {
+		//if debug_getputappend {
 			fmt.Println("Duplicated to PutAppend", op)
-		}
+		//}
 	}
 
 }
@@ -396,6 +396,7 @@ func (kv *KVServer) ApplyMsgListener() {
 						// However I got deadlock without go routine. Figure out the reason.
 						ch <- op
 					}()
+				} else {
 				}
 				kv.mu.Unlock()                                     // avoid deadlock
 				/*if ok {
@@ -534,11 +535,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// kv.waitingOpChan = make(map[ServerSeqIndexType] chan Op)
 	kv.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
 
+	// Given code:
+	kv.applyCh = make(chan raft.ApplyMsg)
+
 	go kv.ApplyMsgListener() // put it before raft init
 	//
 
 	// Given code:
-	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 
@@ -560,7 +563,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}*/
 
 	{
-		//maxraftstate = 1000 // TODO remove this later, change it back in final submission!!!
+		maxraftstate = 1000 // TODO remove this later, change it back in final submission!!!
+
 		kv.rf.SetMaxLogSize( maxraftstate )
 	}
 
