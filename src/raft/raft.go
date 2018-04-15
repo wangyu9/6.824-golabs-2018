@@ -65,7 +65,7 @@ const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
 
-const persist_commit_index = false
+const persist_commit_index = true
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
@@ -1950,6 +1950,7 @@ func (rf *Raft) Kill() {
 	rf.mu.Lock()
 	fmt.Println("Kill(): server=",rf.me)
 	rf.printLog()
+	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -2793,12 +2794,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 
+	rf.mu.Lock()
 	// given code
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.InitInstallSnapshot()
 
-
+	rf.mu.Unlock()
 
 
 	rf.initHeartbeatSender()
