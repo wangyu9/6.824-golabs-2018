@@ -65,7 +65,7 @@ const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
 
-const persist_commit_index = false // This must be false!!, otherwise 3A restarts will not commit entries.
+const persist_commit_index = true
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
@@ -338,6 +338,7 @@ func (rf *Raft) dataBytesToPersist() ([]byte) {
 	e.Encode(rf.baseIndex)
 	if persist_commit_index {
 		e.Encode(rf.commitIndex)
+		e.Encode(rf.lastApplied)
 	}
 	data := w.Bytes()
 	return data
@@ -404,13 +405,15 @@ func (rf *Raft) readPersist(data []byte) {
 		var log [] LogEntry
 		var baseIndex int
 		var commitIndex int
+		var lastApplied int
 
 
 		if d.Decode(&currentTerm) != nil ||
 			d.Decode(&votedFor) != nil ||
 				d.Decode(&log) != nil ||
 					d.Decode(&baseIndex) != nil ||
-			(persist_commit_index && d.Decode(&commitIndex) != nil) {
+			(persist_commit_index && d.Decode(&commitIndex) != nil) ||
+			(persist_commit_index && d.Decode(&lastApplied) != nil){
 				fmt.Println("readPersist() fails.")
 		} else {
 
@@ -420,8 +423,10 @@ func (rf *Raft) readPersist(data []byte) {
 			rf.votedFor = votedFor
 			rf.log = log
 			rf.baseIndex = baseIndex
+			// important: commit
 			if persist_commit_index {
 				rf.commitIndex = commitIndex
+				rf.lastApplied = lastApplied
 			}
 			//fmt.Println("readPersist() succeeds.")
 
@@ -490,6 +495,7 @@ func (rf *Raft) LogCompactionStart() {
 		//fmt.Println("LogCompactionStart(): msg received from kvraft")
 		// DO not unlock and wait LogCompactionEnd() to unlock.
 		// TODO: it may not be taked away by kvraft. fix the issue
+		//fmt.Println("LogCompactionStart(): picked")
 	case <-time.After(400*time.Millisecond):
 		fmt.Println("LogCompactionStart(): times out, not able to compact the log")
 		rf.mu.Unlock()
@@ -501,6 +507,8 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 	// this function shall be called by the upper layer (kvraft)
 
 	rf.takeSnapshot(upperData)
+
+	rf.persist()
 
 	rf.mu.Unlock()
 
@@ -598,7 +606,7 @@ func (rf *Raft) decodeSnapshotData(snapshotData []byte) (Success bool, LastInclu
 	if d.Decode(&LastIncludedIndex) != nil ||
 		d.Decode(&LastIncludedTerm) != nil ||
 			d.Decode(&UpperData) != nil{
-		//fmt.Println("decodeSnapshotData() fails.")
+		fmt.Println("decodeSnapshotData() fails.")
 		Success = false
 	} else {
 		// rf.applySnapshot(LastIncludedIndex, LastIncludedTerm, snapshotData)
@@ -653,6 +661,9 @@ func (rf *Raft) applyMsg(msg ApplyMsg) {
 		rf.applyChan <- msg
 		rf.lastApplied = msg.CommandIndex
 		// update the last applied index. Only for valid command.
+		if persist_commit_index {
+			rf.persist()
+		}
 
 	} else {
 		switch msg.Command.(type) {
@@ -694,11 +705,16 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 		if rf.currentTerm < LastIncludedTerm {
 			fmt.Println("Error 102: applySnapshot() this should not happen!!")
 		}
+
 		rf.currentTerm = max(rf.currentTerm, LastIncludedTerm)  //  // this is clearly wrong: rf.currentTerm = LastIncludedTerm
-		rf.lastApplied = LastIncludedIndex// rf.lastApplied was 0 since not persisted
+		if persist_commit_index {
+			// do nothing to rf.lastApplied, use its default value read from snapshot.
+		} else {
+			rf.lastApplied = LastIncludedIndex // rf.lastApplied was 0 since not persisted
+		}
 		rf.baseIndex = LastIncludedIndex
 		// rf.commitIndex is not persisted, initialized to 0.
-		if rf.commitIndex != 0 {
+		if !persist_commit_index && rf.commitIndex != 0 {
 			fmt.Println("Error 103: applySnapshot() this should not happen!!")
 		}
 		rf.commitIndex = LastIncludedIndex // commitIndex may go backward in time, since replaying is necessary.
@@ -733,6 +749,7 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 			}
 			msg := ApplyMsg{false, InstallSnapshotMsg{upperData}, 0}
 			rf.applyChan <- msg
+
 		}
 	}
 
@@ -1533,6 +1550,7 @@ func (rf *Raft) makeInstallArgs () (Success bool, args InstallSnapshotArgs) {
 	snapshotData := rf.persister.ReadSnapshot()
 	if snapshotData == nil || len(snapshotData) < 1 { // bootstrap without any state?
 		Success = false
+		//fmt.Println("Error: fails here ")
 		return Success, args
 	}
 	Success, LastIncludedIndex, LastIncludedTerm, UpperData := rf.decodeSnapshotData(snapshotData)
@@ -2751,6 +2769,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.InitInstallSnapshot()
 
 
+
+
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
 
@@ -2774,13 +2794,26 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 func (rf *Raft) InitInstallSnapshot() {
 	// fmt.Println("InitInstallSnapshot()")
+
 	Success, args := rf.makeInstallArgs()
 	if Success {
 		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data, false)
+
 		rf.persist()
 	} else {
 		//fmt.Println("Error: Make(): makeInstallArgs() fails")
 	}
+
+	// Important: replaying the log!!! what I missed before!!!
+
+	fmt.Println("Replaying: log size =", len(rf.log))
+
+	for i := rf.baseIndex+1; i <= rf.lastApplied; i++ {
+		msg := ApplyMsg{true, rf.getLog(i).Command, i}
+		rf.applyMsg(msg)
+	}
+
+	rf.persist()
 }
 
 func (rf *Raft) clearApplyStack() {

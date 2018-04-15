@@ -166,7 +166,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					//fmt.Println("PutAppend() to leader", index)
 
 
-					if (reply.Err==""||reply.Err=="OK") {
+					if (reply.Err==OK) {
 
 
 						if index!= ck.cachedLeader {
@@ -186,7 +186,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 		// Sleep some time, since probably need to wait for network healing or leader re-election.
 		// Should not give up after certain number of trails since the lab3 tester ask for a result.
-		time.Sleep(200*time.Millisecond)
+		time.Sleep(1*time.Millisecond)
 	}
 }
 
