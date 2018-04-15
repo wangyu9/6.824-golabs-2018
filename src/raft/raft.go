@@ -65,7 +65,7 @@ const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
 
-const persist_commit_index = true
+const persist_commit_index = false
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
@@ -718,14 +718,17 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 			// do nothing to rf.lastApplied, use its default value read from snapshot.
 		} else {
 			rf.lastApplied = LastIncludedIndex // rf.lastApplied was 0 since not persisted
+			// do not need this since persisted: rf.baseIndex = LastIncludedIndex
+			if rf.baseIndex < LastIncludedIndex {
+				fmt.Println("Error 104: applySnapshot() this should not happen!!")
+			}
+			// rf.commitIndex is not persisted, initialized to 0.
+			if !persist_commit_index && rf.commitIndex != 0 {
+				fmt.Println("Error 103: applySnapshot() this should not happen!!")
+			}
+			rf.commitIndex = LastIncludedIndex // commitIndex may go backward in time, since replaying is necessary.
+			// OK not to persist
 		}
-		rf.baseIndex = LastIncludedIndex
-		// rf.commitIndex is not persisted, initialized to 0.
-		if !persist_commit_index && rf.commitIndex != 0 {
-			fmt.Println("Error 103: applySnapshot() this should not happen!!")
-		}
-		rf.commitIndex = LastIncludedIndex // commitIndex may go backward in time, since replaying is necessary.
-		// OK not to persist
 	}
 
 	if enable_log_compaction_test {
