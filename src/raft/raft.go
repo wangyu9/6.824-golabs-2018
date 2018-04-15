@@ -367,11 +367,6 @@ func (rf *Raft) persist() {
 		rf.persister.SaveRaftState(rf.dataBytesToPersist())
 	}
 
-	if enable_lab_3b && !rf.logCompactionInitialized {
-		if rf.logCompactionCondition() {
-			go rf.LogCompactionStart()
-		}
-	}
 }
 
 
@@ -472,12 +467,13 @@ func (rf *Raft) FakeLogCompaction() { // TODO: remove this later
 
 
 func (rf *Raft) logCompactionCondition() (bool) {
-	return !(rf.maxlogsize < 10 || rf.persister.RaftStateSize() < rf.maxlogsize)
+	return rf.maxlogsize > 10 && rf.persister.RaftStateSize() > rf.maxlogsize
 }
 
 // used only if enable_incrementing_output==true
 func (rf *Raft) LogCompactionStart() {
 	// this function can be called by either raft or the upper layer (kvraft)
+
 	rf.mu.Lock()
 
 	rf.logCompactionInitialized = true
@@ -1141,6 +1137,15 @@ func max(a, b int) int {
 
 func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
+
+	defer func() {
+		if enable_lab_3b {
+			if rf.logCompactionCondition() && !rf.logCompactionInitialized {
+				rf.LogCompactionStart()
+			}
+		}
+	}()
+
 	rf.mu.Lock()
 
 	/*needLogCompaction := false
@@ -1523,9 +1528,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			}()
 		}*/
 
-		defer rf.mu.Unlock()
-		defer rf.persist()
-
 
 		term = rf.currentTerm
 		isLeader = (rf.serverState == SERVER_STATE_LEADER)
@@ -1557,6 +1559,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 
 
+
+		rf.persist()
+		rf.mu.Unlock()
+
+		if enable_lab_3b {
+			if rf.logCompactionCondition() && !rf.logCompactionInitialized {
+				rf.LogCompactionStart()
+			}
+		}
 	}
 
 	return index, term, isLeader

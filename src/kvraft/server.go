@@ -593,7 +593,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	{
 		//maxraftstate = 1000 // TODO remove this later, change it back in final submission!!!
 
-		kv.rf.SetMaxLogSize( maxraftstate/2 )
+		kv.rf.SetMaxLogSize( maxraftstate )
 	}
 
 
