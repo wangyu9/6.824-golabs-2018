@@ -2051,6 +2051,7 @@ func (rf *Raft) stateCandidateToLeader() {
 
 	}
 
+	fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm, "with log")
 	if verbose>0 || enable_debug_lab_2b {
 		fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm, "with log")
 		for i := 0; i < len(rf.log); i++ {
