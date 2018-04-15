@@ -65,7 +65,7 @@ const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
 
-const persist_commit_index = false
+const persist_commit_index = true
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
@@ -759,6 +759,10 @@ func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int, upper
 			}
 			msg := ApplyMsg{false, InstallSnapshotMsg{upperData}, 0}
 			rf.applyChan <- msg
+
+			// Critical:
+			snapshotData := rf.encodeSnapshotData(LastIncludedIndex, LastIncludedTerm, upperData)
+			rf.persister.SaveStateAndSnapshot(rf.dataBytesToPersist(), snapshotData)
 
 		}
 	}
