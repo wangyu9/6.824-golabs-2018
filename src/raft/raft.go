@@ -515,7 +515,7 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 
 	rf.persist()
 
-	fmt.Println("LogCompactionEnd(): ")
+	fmt.Println("LogCompactionEnd(): server=",rf.me)
 	rf.printLog()
 
 	rf.mu.Unlock()
@@ -1942,6 +1942,10 @@ func (rf *Raft) Kill() {
 		rf.clearApplyStack()
 		rf.mu.Unlock()
 	}
+
+
+	fmt.Println("Kill(): server=",rf.me)
+	rf.printLog()
 }
 
 
@@ -2835,7 +2839,7 @@ func (rf *Raft) InitInstallSnapshot() {
 		rf.lastApplied = msg.CommandIndex
 	}
 
-	fmt.Println("Initialization")
+	fmt.Println("Initialization of log server:", rf.me)
 	rf.printLog()
 
 	rf.persist()

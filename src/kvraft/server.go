@@ -453,7 +453,9 @@ func (kv *KVServer) ApplyMsgListener() {
 					kv.mu.Unlock()
 				}
 			case raft.SaveSnapshotMsg:
-				{
+				{// rf.Lock() is Lock() until LogCompactionEnd
+
+
 					kv.mu.Lock()
 
 					upperData := kv.encodeDatabase()
