@@ -487,9 +487,10 @@ func (rf *Raft) LogCompactionStart() {
 
 	//fmt.Println("LogCompactionStart(): initialized")
 
-
+	// conservatively apply all the committed index.
 	oldcommitIndex := rf.commitIndex
 	rf.applyCommittedLog(oldcommitIndex)
+	rf.persist()
 
 	// never do go routine around this.
 	msg := ApplyMsg{false, SaveSnapshotMsg{}, -1}
