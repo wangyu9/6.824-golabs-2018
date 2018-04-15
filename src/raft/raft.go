@@ -61,6 +61,7 @@ const verbose = 0//2
 const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
 const enable_debug_lab_3b = false
+const enable_debug_lab_3b2 = false
 const enable_warning_lab3b = true//false
 
 const use_apply_stack = false
@@ -515,8 +516,10 @@ func (rf *Raft) LogCompactionEnd(upperData []byte) {
 
 	rf.persist()
 
-	fmt.Println("LogCompactionEnd(): server=",rf.me)
-	rf.printLog()
+	if enable_debug_lab_3b2 {
+		fmt.Println("LogCompactionEnd(): server=", rf.me)
+		rf.printLog()
+	}
 
 	rf.mu.Unlock()
 
@@ -1951,11 +1954,13 @@ func (rf *Raft) Kill() {
 		rf.mu.Unlock()
 	}
 
-	rf.mu.Lock()
-	fmt.Println("Kill(): server=",rf.me)
-	rf.printLog()
-	rf.persist()
-	rf.mu.Unlock()
+	if enable_debug_lab_3b2 {
+		rf.mu.Lock()
+		fmt.Println("Kill(): server=", rf.me)
+		rf.printLog()
+		rf.persist()
+		rf.mu.Unlock()
+	}
 }
 
 
@@ -2059,7 +2064,9 @@ func (rf *Raft) stateCandidateToLeader() {
 
 	}
 
-	fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm, "with log")
+	if enable_debug_lab_3b2 {
+		fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm, "with log")
+	}
 	if verbose>0 || enable_debug_lab_2b {
 		fmt.Println("New leader elected:", rf.me, "for term", rf.currentTerm, "with log")
 		for i := 0; i < len(rf.log); i++ {
@@ -2841,17 +2848,19 @@ func (rf *Raft) InitInstallSnapshot() {
 	}
 
 	// Important: replaying the log!!! what I missed before!!!
-
-	fmt.Println("Replaying: log size =", len(rf.log), "from", rf.baseIndex, "to", rf.lastApplied)
-
+	if enable_debug_lab_3b2 {
+		fmt.Println("Replaying: log size =", len(rf.log), "from", rf.baseIndex, "to", rf.lastApplied)
+	}
 	for i := rf.baseIndex+1; i <= rf.lastApplied; i++ {
 		msg := ApplyMsg{true, rf.getLog(i).Command, i}
 		// rf.applyMsg(msg) // this also updates rf.lastApplied within it.
 		rf.applyChan <- msg
 	}
 
-	fmt.Println("Initialization of log server:", rf.me)
-	rf.printLog()
+	if enable_debug_lab_3b2 {
+		fmt.Println("Initialization of log server:", rf.me)
+		rf.printLog()
+	}
 
 	rf.persist()
 

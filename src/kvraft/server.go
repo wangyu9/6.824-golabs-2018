@@ -23,6 +23,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 const debug_getputappend = false
 const enable_warning_lab3 = true
+const enable_debug_lab3b = false
 
 type OpType int
 //type ServerSeqIndexType int
@@ -148,8 +149,10 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 			dataHandler(&op, reply)
 
-			if op.Key == strconv.Itoa(0){
-				fmt.Println("Get:----", op.Value)
+			if enable_debug_lab3b {
+				if op.Key == strconv.Itoa(0) {
+					fmt.Println("Get:----", op.Value)
+				}
 			}
 
 			kv.mu.Unlock()
@@ -317,8 +320,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 			dataHandler(&op, reply)
 
-			if op.Key == strconv.Itoa(0){
-				fmt.Println("PutAppend:----",args.Op," ", op.Value)
+			if enable_debug_lab3b {
+				if op.Key == strconv.Itoa(0) {
+					fmt.Println("PutAppend:----", args.Op, " ", op.Value)
+				}
 			}
 
 			kv.mu.Unlock()
@@ -368,10 +373,12 @@ func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
 
-	kv.mu.Lock()
-	fmt.Println("Kill() KVserver: server=", kv.me)
-	fmt.Println("Decoded Database:", kv.database,"\n")
-	kv.mu.Unlock()
+	if enable_debug_lab3b {
+		kv.mu.Lock()
+		fmt.Println("Kill() KVserver: server=", kv.me)
+		fmt.Println("Decoded Database:", kv.database, "\n")
+		kv.mu.Unlock()
+	}
 }
 
 // wangyu:
@@ -452,7 +459,9 @@ func (kv *KVServer) ApplyMsgListener() {
 						//Success = false
 					} else {
 						//Success = true
-						fmt.Println("Decoded Database:", kv.database,"\n")
+						if enable_debug_lab3b {
+							fmt.Println("Decoded Database:", kv.database, "\n")
+						}
 					}
 
 					kv.mu.Unlock()
@@ -506,7 +515,9 @@ func (kv *KVServer) encodeDatabase() (upperData []byte) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
-	fmt.Println("Encoded Database:", kv.database)
+	if enable_debug_lab3b {
+		fmt.Println("Encoded Database:", kv.database)
+	}
 
 	e.Encode(kv.database)
 	e.Encode(kv.mostRecentWrite)
