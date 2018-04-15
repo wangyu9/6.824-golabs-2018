@@ -926,6 +926,7 @@ func (rf *Raft) printLog() {
 	for i := 0; i < len(rf.log); i++ {
 		fmt.Println(rf.log[i])
 	}
+	fmt.Println("\n")
 }
 
 //
@@ -1943,9 +1944,10 @@ func (rf *Raft) Kill() {
 		rf.mu.Unlock()
 	}
 
-
+	rf.mu.Lock()
 	fmt.Println("Kill(): server=",rf.me)
 	rf.printLog()
+	rf.mu.Unlock()
 }
 
 

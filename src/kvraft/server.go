@@ -367,6 +367,12 @@ func (kv *KVServer) closeAndDeletePeningOps(cid ClientIndexType, rid RequestInde
 func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+
+	kv.mu.Lock()
+	fmt.Println("Kill() KVserver: server=", kv.me)
+	fmt.Println("Decoded Database:", kv.database,"\n")
+
+	kv.mu.Unlock()
 }
 
 // wangyu:
@@ -447,7 +453,7 @@ func (kv *KVServer) ApplyMsgListener() {
 						//Success = false
 					} else {
 						//Success = true
-						fmt.Println("Decoded Database:", kv.database)
+						fmt.Println("Decoded Database:", kv.database,"\n")
 					}
 
 					kv.mu.Unlock()
