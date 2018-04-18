@@ -9,9 +9,17 @@ import "time"
 import "crypto/rand"
 import "math/big"
 
+
+type ClientIndexType int
+type RequestIndexType int
+
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+
+	clientID	ClientIndexType
+	cachedLeader int // the server ID that the client believe is the current leader.
+	requestID	RequestIndexType // the number of requests have been made.
 }
 
 func nrand() int64 {
@@ -25,12 +33,21 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// Your code here.
+
+	ck.clientID = ClientIndexType(int(nrand())) // assigned a random number and *hope* there is no conflict... ideally this should be assigned by the kvserver...
+	//fmt.Println("Client", ck.clientID, "initialized")
+	ck.cachedLeader = 0 // set a random initial cacheLeader
+	ck.requestID = 0
+
 	return ck
 }
 
 func (ck *Clerk) Query(num int) Config {
 	args := &QueryArgs{}
 	// Your code here.
+	ck.requestID++
+	args.RequestID = ck.requestID
+
 	args.Num = num
 	for {
 		// try each known server.
@@ -48,6 +65,10 @@ func (ck *Clerk) Query(num int) Config {
 func (ck *Clerk) Join(servers map[int][]string) {
 	args := &JoinArgs{}
 	// Your code here.
+	ck.requestID++
+	args.RequestID = ck.requestID
+
+	// Given
 	args.Servers = servers
 
 	for {
@@ -66,6 +87,10 @@ func (ck *Clerk) Join(servers map[int][]string) {
 func (ck *Clerk) Leave(gids []int) {
 	args := &LeaveArgs{}
 	// Your code here.
+	ck.requestID++
+	args.RequestID = ck.requestID
+
+	// Given
 	args.GIDs = gids
 
 	for {
@@ -84,6 +109,10 @@ func (ck *Clerk) Leave(gids []int) {
 func (ck *Clerk) Move(shard int, gid int) {
 	args := &MoveArgs{}
 	// Your code here.
+	ck.requestID++
+	args.RequestID = ck.requestID
+
+	// Given
 	args.Shard = shard
 	args.GID = gid
 
