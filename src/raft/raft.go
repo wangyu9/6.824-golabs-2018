@@ -1313,7 +1313,10 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							}
 
 							rf.deleteLogSince(args.PrevLogIndex+1+i)
-							rf.log = append(rf.log, args.Entries[i])
+
+							// This makes another copy.
+							entry := LogEntry{args.Entries[i].LogTerm,args.Entries[i].Command}
+							rf.log = append(rf.log, entry)
 							if enable_lab_2c {
 								needPersist = true
 							}
@@ -1347,7 +1350,13 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 							}
 						}
 
-						rf.log = append(rf.log, args.Entries[i])
+						// This makes another copy.
+						entry := LogEntry{args.Entries[i].LogTerm,args.Entries[i].Command}
+						rf.log = append(rf.log, entry)
+						if entry.Command==nil {
+							fmt.Println("Debug point 6")
+						}
+
 						if enable_lab_2c {
 							needPersist = true
 						}
@@ -1753,6 +1762,12 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 			// entries = append( []LogEntry{rf.getLog(prevLogIndex+1)}, entries...)
 			// entries := rf.log[(prevLogIndex+1):]
 			entries := rf.getLogSince(prevLogIndex+1)
+
+			for ii:=0; ii<len(entries); ii++ {
+				if entries[ii].Command==nil {
+					fmt.Println("Warning: server",rf.me,"is sending a nil Command at Index=", prevLogIndex+1+ii)
+				}
+			}
 
 			// Remember to decode entries in reverse order
 			// TODO optional: optimize to avoid sending entries before serverIndex converges

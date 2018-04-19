@@ -321,7 +321,7 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 	wrongLeader = false
 	err = OK
 
-	fmt.Println("Start() called:", op)
+	fmt.Println("Start() called:", op, "at server:", sm.me)
 
 	_, startTerm, isLeader := sm.rf.Start(op)
 
@@ -419,10 +419,12 @@ func (sm *ShardMaster) tryApplyOp(op *Op) (r interface{}) {
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 
-	argsc := JoinArgs{copyMap(args.Servers), args.ClientID, args.RequestID}
+	//argsc := JoinArgs{copyMap(args.Servers), args.ClientID, args.RequestID}
 	// TODO: is there necessary?
 
-	op := Op{OP_TYPE_JOIN, argsc}
+	//op := Op{OP_TYPE_JOIN, argsc}
+
+	op := Op{OP_TYPE_JOIN, *args}
 
 	wrongLeader, err, _ := sm.StartOpRaft(op, sm.JoinHandler)
 
