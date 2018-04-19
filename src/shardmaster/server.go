@@ -872,7 +872,7 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 			fmt.Println("Does this ever happen?")
 		}
 
-	case <- time.After( 3000*time.Millisecond):
+	case <- time.After( 20000*time.Millisecond):
 		err = "StartOpRaftTimesOut"
 		fmt.Println("Warning: StartOpRaft() times out.")
 	}
