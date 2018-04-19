@@ -52,11 +52,19 @@ const (  // iota is reset to 0
 	OP_TYPE_QUERY OpType = iota //  == 3
 )
 
+//type Op struct {
+	// Your data here.
+//	Type OpType
+//	Args interface{}
+//}
+
 type Op struct {
 	// Your data here.
 	Type OpType
-	Args interface{}
-
+	ArgsJoin JoinArgs
+	ArgsLeave LeaveArgs
+	ArgsMove MoveArgs
+	ArgsQuery QueryArgs
 }
 
 //type OpResult struct {
@@ -153,19 +161,20 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 	// the current configuration (i.e. a GID should be allowed to Join, then Leave,
 	// then Join again).
 
-	newServers := op.Args.(JoinArgs).Servers
+	// newServers := op.Args.(JoinArgs).Servers
+	newServers := op.ArgsJoin.Servers
 
-	fmt.Println("Servers joined", newServers)
-	fmt.Println("Servers joined2", copyMap(newServers))
+	//fmt.Println("Servers joined", newServers)
+	//fmt.Println("Servers joined2", copyMap(newServers))
 
 	config := copyConfig(sm.configs[sm.currentConfigNum])// copy, not references!!
 
 	for gid, servers := range newServers {
 		_, exists := config.Groups[gid]
 		if exists {
-			fmt.Println("Error: JoinHandler(): GID=",gid,"already exists")
+			fmt.Println("Warning: JoinHandler(): GID=",gid,"already exists")
 		} else {
-			fmt.Println("JoinHandler(): GID=", gid,"added")
+			//fmt.Println("JoinHandler(): GID=", gid,"added")
 			config.Groups[gid] = servers
 		}
 	}
@@ -174,11 +183,11 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 
 	sm.currentConfigNum++
 
-	fmt.Println("config:",config)
+	//fmt.Println("config:",config)
 
 	newConfig := copyConfig(config)//Config{sm.currentConfigNum, shards, 100}
 
-	fmt.Println("newConfig:",newConfig)
+	//fmt.Println("newConfig:",newConfig)
 
 	newConfig.Num = sm.currentConfigNum
 
@@ -186,7 +195,7 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 
 	sm.configs = append(sm.configs, newConfig)
 
-	fmt.Println("Configs:",sm.configs)
+	// fmt.Println("Configs:",sm.configs)
 
 	return ""
 }
@@ -200,9 +209,10 @@ func (sm *ShardMaster) LeaveHandler (op *Op) (interface{}) {
 	// The new configuration should divide the shards as evenly as possible among
 	// the groups, and should move as few shards as possible to achieve that goal.
 
-	GIDs := op.Args.(LeaveArgs).GIDs
+	//GIDs := op.Args.(LeaveArgs).GIDs
+	GIDs := op.ArgsLeave.GIDs
 
-	fmt.Println("GIDs leaves", GIDs)
+	//fmt.Println("GIDs leaves", GIDs)
 
 
 	config := copyConfig(sm.configs[sm.currentConfigNum])// copy, not references!!
@@ -221,11 +231,11 @@ func (sm *ShardMaster) LeaveHandler (op *Op) (interface{}) {
 
 	sm.currentConfigNum++
 
-	fmt.Println("config:",config)
+	//fmt.Println("config:",config)
 
 	newConfig := copyConfig(config)//Config{sm.currentConfigNum, shards, 100}
 
-	fmt.Println("newConfig:",newConfig)
+	//fmt.Println("newConfig:",newConfig)
 
 	newConfig.Num = sm.currentConfigNum
 
@@ -243,7 +253,8 @@ func (sm *ShardMaster) QueryHandler (op *Op) (interface{}) {
 	// The new configuration should divide the shards as evenly as possible among
 	// the groups, and should move as few shards as possible to achieve that goal.
 
-	Num := op.Args.(QueryArgs).Num
+	//Num := op.Args.(QueryArgs).Num
+	Num := op.ArgsQuery.Num
 
 	//  If the number is -1 or bigger than the biggest known configuration number,
 	// the shardmaster should reply with the latest configuration.
@@ -251,7 +262,7 @@ func (sm *ShardMaster) QueryHandler (op *Op) (interface{}) {
 		Num = sm.currentConfigNum
 	}
 
-	fmt.Println("GIDs Query", Num)
+	//fmt.Println("GIDs Query", Num)
 
 	return copyConfig(sm.configs[Num])
 }
@@ -265,10 +276,12 @@ func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
 	// Leave re-balance.
 
 
-	GID := op.Args.(MoveArgs).GID
-	ShardID := op.Args.(MoveArgs).Shard
+	//GID := op.Args.(MoveArgs).GID
+	//ShardID := op.Args.(MoveArgs).Shard
+	GID := op.ArgsMove.GID
+	ShardID := op.ArgsMove.Shard
 
-	fmt.Println("Move GID=", GID, ", Shard=", ShardID)
+	// fmt.Println("Move GID=", GID, ", Shard=", ShardID)
 
 
 	config := copyConfig(sm.configs[sm.currentConfigNum])// copy, not references!!
@@ -298,6 +311,7 @@ func (sm *ShardMaster) GetOpIDs(op *Op) (clientID ClientIndexType, requestID Req
 	//var clientID ClientIndexType
 	//var requestID RequestIndexType
 
+	/*
 	switch op.Type {
 	case OP_TYPE_JOIN:
 		clientID = op.Args.(JoinArgs).ClientID
@@ -312,6 +326,22 @@ func (sm *ShardMaster) GetOpIDs(op *Op) (clientID ClientIndexType, requestID Req
 		clientID = op.Args.(QueryArgs).ClientID
 		requestID = op.Args.(QueryArgs).RequestID
 	}
+	*/
+
+	switch op.Type {
+	case OP_TYPE_JOIN:
+		clientID = op.ArgsJoin.ClientID
+		requestID = op.ArgsJoin.RequestID
+	case OP_TYPE_LEAVE:
+		clientID = op.ArgsLeave.ClientID
+		requestID = op.ArgsLeave.RequestID
+	case OP_TYPE_MOVE:
+		clientID = op.ArgsMove.ClientID
+		requestID = op.ArgsMove.RequestID
+	case OP_TYPE_QUERY:
+		clientID = op.ArgsQuery.ClientID
+		requestID = op.ArgsQuery.RequestID
+	}
 
 	return
 }
@@ -321,7 +351,7 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 	wrongLeader = false
 	err = OK
 
-	fmt.Println("Start() called:", op, "at server:", sm.me)
+	// fmt.Println("Start() called:", op, "at server:", sm.me)
 
 	_, startTerm, isLeader := sm.rf.Start(op)
 
@@ -424,7 +454,10 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 
 	//op := Op{OP_TYPE_JOIN, argsc}
 
-	op := Op{OP_TYPE_JOIN, *args}
+	//op := Op{OP_TYPE_JOIN, *args}
+	op := Op{}
+	op.Type = OP_TYPE_JOIN
+	op.ArgsJoin = *args
 
 	wrongLeader, err, _ := sm.StartOpRaft(op, sm.JoinHandler)
 
@@ -443,7 +476,10 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 
-	op := Op{OP_TYPE_LEAVE, *args}
+	//op := Op{OP_TYPE_LEAVE, *args}
+	op := Op{}
+	op.Type = OP_TYPE_LEAVE
+	op.ArgsLeave = *args
 
 	wrongLeader, err, _ := sm.StartOpRaft(op, sm.LeaveHandler)
 
@@ -455,7 +491,10 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 
-	op := Op{OP_TYPE_MOVE, *args}
+	//op := Op{OP_TYPE_MOVE, *args}
+	op := Op{}
+	op.Type = OP_TYPE_MOVE
+	op.ArgsMove = *args
 
 	wrongLeader, err, _ := sm.StartOpRaft(op, sm.MoveHandler)
 
@@ -467,7 +506,10 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
 
-	op := Op{OP_TYPE_QUERY, *args}
+	//op := Op{OP_TYPE_QUERY, *args}
+	op := Op{}
+	op.Type = OP_TYPE_QUERY
+	op.ArgsQuery = *args
 
 	wrongLeader, err, r := sm.StartOpRaft(op, sm.QueryHandler)
 

@@ -65,6 +65,8 @@ const enable_debug_lab_3b2 = false
 
 const enable_warning_lab3b = true
 
+const enable_debug_lab_4a = true
+
 const use_apply_stack = false
 
 const persist_commit_index = false // I think false is more robust, either passed lab2,3.
@@ -2011,7 +2013,7 @@ func (rf *Raft) Kill() {
 		rf.mu.Unlock()
 	}
 
-	fmt.Println("Kill(): server=", rf.me, "log:",rf.log)
+	// fmt.Println("Kill(): server=", rf.me, "log:",rf.log)
 }
 
 
@@ -2866,7 +2868,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
 
-	fmt.Println("Raft Server", rf.me,"(Re-)Starts", "Current Term:", rf.currentTerm, "votedFor=", rf.votedFor, "baseIndex=", rf.baseIndex, "log:", rf.log)
+	if enable_debug_lab_4a {
+		//fmt.Println("Raft Server", rf.me,"(Re-)Starts", "Current Term:", rf.currentTerm, "votedFor=", rf.votedFor, "baseIndex=", rf.baseIndex, "log:", rf.log)
+	}
 
 	go rf.startCommitChecker()
 
