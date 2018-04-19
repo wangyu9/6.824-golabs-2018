@@ -8,8 +8,11 @@ import (
 	"labgob"
 	"time"
 	"fmt"
+	"sort"
 )
 
+
+const enable_debug_lab4a = false
 
 type OpIndexType int
 
@@ -52,19 +55,22 @@ const (  // iota is reset to 0
 	OP_TYPE_QUERY OpType = iota //  == 3
 )
 
+// Critical: wired though, but the labrpc cannot pass Op with interface, the received Op is always nil.
 //type Op struct {
 	// Your data here.
 //	Type OpType
 //	Args interface{}
 //}
 
+// So I have to use the following one instead.
+
 type Op struct {
 	// Your data here.
 	Type OpType
-	ArgsJoin JoinArgs
-	ArgsLeave LeaveArgs
-	ArgsMove MoveArgs
-	ArgsQuery QueryArgs
+	ArgsJoin JoinArgs // Used if Type==OP_TYPE_JOIN
+	ArgsLeave LeaveArgs // Used if Type==OP_TYPE_LEAVE
+	ArgsMove MoveArgs // Used if Type==OP_TYPE_MOVE
+	ArgsQuery QueryArgs // Used if Type==OP_TYPE_QUERY
 }
 
 //type OpResult struct {
@@ -73,20 +79,21 @@ type Op struct {
 
 type fn func(op *Op) (interface{})
 
-/*
-func copyMap (originalMap map [interface{}] []interface{}) (targetMap map [interface{}] []interface{}) {
 
-	// Create the target map
-	targetMap = make(map [interface{}] []interface{})
+func copyMapTo (originalMap* map [int][]string, targetMap* map [int][]string) {
+
+	// Clear the target map
+	// targetMap = nil
+	*targetMap = make(map [int][]string)
 
 	// Copy from the original map to the target map
-	for key, value := range originalMap {
-		targetMap[key] = value
+	for key, value := range *originalMap {
+		(*targetMap)[key] = value
 	}
 
 	return
 }
-*/
+
 
 func copyMap (originalMap map [int] []string) (targetMap map [int] []string) {
 
@@ -117,13 +124,24 @@ func copyNShards (origin [NShards] int) (target [NShards] int) {
 	return
 }
 
-func copyConfig (config Config) (copied Config) {
+func copyNShardsTo (origin* [NShards] int, target* [NShards] int) {
+
+	for i:=0; i<NShards; i++ {
+		target[i] = origin[i]
+	}
+	return
+}
+
+func copyConfig (config* Config) (copied Config) {
 
 	copied = Config{}
+	copied.Groups = map[int][]string{}
 
 	copied.Num = config.Num
-	copied.Shards = copyNShards(config.Shards)
-	copied.Groups = copyMap(config.Groups)
+	// copied.Shards = copyNShards(config.Shards)
+	// copied.Groups = copyMap(config.Groups)
+	copyNShardsTo(&config.Shards, &copied.Shards)
+	copyMapTo(&config.Groups, &copied.Groups)
 
 	return
 }
@@ -136,6 +154,9 @@ func (config *Config) Rebalance() {
 		i++
 	}
 
+	sort.Ints(gids) // Important: this is critical: so the same results will obtained on different sdmaster server!!
+	// Since the keys in map is not ordered!!!!!
+
 	if len(gids)>0 {
 		for i:=0; i<len(config.Shards); i++ {
 			config.Shards[i] = gids[i%len(gids)]
@@ -145,9 +166,9 @@ func (config *Config) Rebalance() {
 			config.Shards[i] = 0
 		}
 	}
-
-
 }
+
+// An important rule for the Handler is that the result should be identical whenever executed, and on whichever machine.
 
 func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 
@@ -164,10 +185,12 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 	// newServers := op.Args.(JoinArgs).Servers
 	newServers := op.ArgsJoin.Servers
 
-	//fmt.Println("Servers joined", newServers)
+	if enable_debug_lab4a {
+		fmt.Println("Servers joined", newServers)
+	}
 	//fmt.Println("Servers joined2", copyMap(newServers))
 
-	config := copyConfig(sm.configs[sm.currentConfigNum])// copy, not references!!
+	config := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
 
 	for gid, servers := range newServers {
 		_, exists := config.Groups[gid]
@@ -185,13 +208,11 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 
 	//fmt.Println("config:",config)
 
-	newConfig := copyConfig(config)//Config{sm.currentConfigNum, shards, 100}
+	newConfig := copyConfig(&config)//Config{sm.currentConfigNum, shards, 100}
 
 	//fmt.Println("newConfig:",newConfig)
 
 	newConfig.Num = sm.currentConfigNum
-
-
 
 	sm.configs = append(sm.configs, newConfig)
 
@@ -212,10 +233,11 @@ func (sm *ShardMaster) LeaveHandler (op *Op) (interface{}) {
 	//GIDs := op.Args.(LeaveArgs).GIDs
 	GIDs := op.ArgsLeave.GIDs
 
-	//fmt.Println("GIDs leaves", GIDs)
+	if enable_debug_lab4a {
+		fmt.Println("GIDs leaves", GIDs)
+	}
 
-
-	config := copyConfig(sm.configs[sm.currentConfigNum])// copy, not references!!
+	config := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
 
 
 	for _, gid := range GIDs {
@@ -233,7 +255,7 @@ func (sm *ShardMaster) LeaveHandler (op *Op) (interface{}) {
 
 	//fmt.Println("config:",config)
 
-	newConfig := copyConfig(config)//Config{sm.currentConfigNum, shards, 100}
+	newConfig := copyConfig(&config)//Config{sm.currentConfigNum, shards, 100}
 
 	//fmt.Println("newConfig:",newConfig)
 
@@ -256,15 +278,22 @@ func (sm *ShardMaster) QueryHandler (op *Op) (interface{}) {
 	//Num := op.Args.(QueryArgs).Num
 	Num := op.ArgsQuery.Num
 
+	if enable_debug_lab4a {
+		fmt.Println("GIDs Query", Num)
+	}
+
 	//  If the number is -1 or bigger than the biggest known configuration number,
 	// the shardmaster should reply with the latest configuration.
-	if Num==-1 || Num>sm.currentConfigNum{
+	if Num==-1{
 		Num = sm.currentConfigNum
 	}
 
-	//fmt.Println("GIDs Query", Num)
+	if Num>sm.currentConfigNum{
+		fmt.Println("Warning: Query Config", Num, "is larger than currentConfigNum", sm.currentConfigNum)
+		Num = sm.currentConfigNum
+	}
 
-	return copyConfig(sm.configs[Num])
+	return copyConfig(&sm.configs[Num])
 }
 
 func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
@@ -281,17 +310,18 @@ func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
 	GID := op.ArgsMove.GID
 	ShardID := op.ArgsMove.Shard
 
-	// fmt.Println("Move GID=", GID, ", Shard=", ShardID)
+	if enable_debug_lab4a {
+		fmt.Println("Move GID=", GID, ", Shard=", ShardID)
+	}
 
-
-	config := copyConfig(sm.configs[sm.currentConfigNum])// copy, not references!!
+	config := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
 
 	// config.Rebalance() // do not do rebalance
 	config.Shards[ShardID] = GID
 
 	sm.currentConfigNum++
 
-	newConfig := copyConfig(config)//Config{sm.currentConfigNum, shards, 100}
+	newConfig := copyConfig(&config)//Config{sm.currentConfigNum, shards, 100}
 
 	newConfig.Num = sm.currentConfigNum
 
@@ -515,7 +545,8 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 
 	if !wrongLeader && err==OK {
 		//*reply = r.(QueryReply)
-		reply.Config = r.(Config)
+		config := r.(Config)
+		reply.Config = copyConfig(&config)
 	}
 
 	reply.WrongLeader = wrongLeader
