@@ -63,9 +63,9 @@ const enable_debug_lab_2c = false
 const enable_debug_lab_3b = false
 const enable_debug_lab_3b2 = false
 
-const enable_warning_lab3b = true
+const enable_warning_lab3b = false
 
-const enable_debug_lab_4a = true
+const enable_debug_lab_4a = false
 
 const use_apply_stack = false
 
