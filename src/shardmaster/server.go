@@ -34,17 +34,17 @@ type ShardMaster struct {
 	// Given:
 	configs []Config // indexed by config num
 
-	pendingOps	map[ClientIndexType] map[RequestIndexType] chan interface{}
+	pendingOps	map[int] chan interface{}
 	mostRecentWrite map[ClientIndexType] RequestIndexType
 }
 
-func (sm *ShardMaster) insertToPendingOps(cid ClientIndexType, rid RequestIndexType, value chan interface{}) {
+//func (sm *ShardMaster) insertToPendingOps(cid ClientIndexType, rid RequestIndexType, value chan interface{}) {
 	// map[cid][rid] = value
-	if sm.pendingOps[cid]==nil {
-		sm.pendingOps[cid] = make(map[RequestIndexType] chan interface{})
-	}
-	sm.pendingOps[cid][rid] = value
-}
+//	if sm.pendingOps[cid]==nil {
+//		sm.pendingOps[cid] = make(map[RequestIndexType] chan interface{})
+//	}
+//	sm.pendingOps[cid][rid] = value
+//}
 
 
 type OpType int
@@ -832,7 +832,7 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 
 	// fmt.Println("Start() called:", op, "at server:", sm.me)
 
-	_, startTerm, isLeader := sm.rf.Start(op)
+	index, startTerm, isLeader := sm.rf.Start(op)
 
 	if !isLeader {
 		wrongLeader = true
@@ -840,12 +840,15 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 	}
 
 
-	clientID, requestID := sm.GetOpIDs(&op)
+	//clientID, requestID := sm.GetOpIDs(&op)
 
 	sm.mu.Lock()
 
 	newChan := make(chan interface{}, 1)
-	sm.insertToPendingOps(clientID, requestID, newChan)
+	//sm.insertToPendingOps(clientID, requestID, newChan)
+
+	sm.pendingOps[index] = newChan
+
 
 	sm.mu.Unlock()
 
@@ -867,8 +870,6 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 
 		} else {
 			wrongLeader = true
-
-
 			fmt.Println("Does this ever happen?")
 		}
 
@@ -1022,11 +1023,11 @@ func (sm *ShardMaster) MainLoop() {
 
 			sm.mu.Lock()
 
-			clientID, requestID := sm.GetOpIDs(&op)
+			//clientID, requestID := sm.GetOpIDs(&op)
 
 			reply := sm.tryApplyOp(&op)
 
-			ch, ok := sm.pendingOps[clientID][requestID]
+			ch, ok := sm.pendingOps[msg.CommandIndex]
 
 			if ok {
 				go func() {
@@ -1076,7 +1077,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
 	// Your code here.
-	sm.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan interface{})
+	//sm.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan interface{})
+	sm.pendingOps = make(map[int] chan interface{})
 	sm.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
 
 	sm.currentConfigNum = 0
