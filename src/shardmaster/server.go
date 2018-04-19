@@ -13,6 +13,7 @@ import (
 
 
 const enable_debug_lab4a = false
+const enable_debug_rebalance = false
 
 type OpIndexType int
 
@@ -146,6 +147,10 @@ func copyConfig (config* Config) (copied Config) {
 	return
 }
 
+
+// An important rule for the Rebalance is that the result should be identical whenever executed, and on whichever machine.
+
+// Naive rebalance: slow, but passing all lab4a.
 func (config *Config) Rebalance() {
 	gids := make([] int, len(config.Groups))
 	i := 0
@@ -167,6 +172,456 @@ func (config *Config) Rebalance() {
 		}
 	}
 }
+
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// This one does not pass, max-min can be 2 or larger.
+func (config *Config) JoinRebalance(newJoinID int) {
+
+	gids := make([] int, len(config.Groups))
+	i := 0
+	for key, _ := range config.Groups {
+		gids[i] = key
+		i++
+	}
+
+	if len(gids)==1 {
+		config.Rebalance()
+		return
+	}
+
+	if enable_debug_rebalance {
+		fmt.Println("JoinRebalance()")
+	}
+
+	sort.Ints(gids) // Important: this is critical: so the same results will obtained on different sdmaster server!!
+	// Since the keys in map is not ordered!!!!!
+
+
+	idxNew := -1
+	for k:=0; k<len(gids); k++ {
+		if gids[k]==newJoinID {
+			idxNew=k
+		}
+	}
+
+	// len(gids)==0 is impossible due to the new join.
+
+	currentLoad := make([]int, len(gids))
+	// The k-th one that gids[k]==newJOinID is not used.
+
+	idx := make([]int, len(config.Shards))
+
+
+	for s:=0; s<len(config.Shards); s++ {
+
+		// find the k
+		k := 0
+		for k=0; k<len(gids); k++ {
+			if gids[k]==config.Shards[s] {
+				break
+			}
+		}
+		idx[s] = k
+
+		currentLoad[k]++
+
+		if gids[k]==newJoinID {
+			fmt.Println("Critical Error: this should be impossible!")
+		}
+	}
+
+	if enable_debug_rebalance {
+		fmt.Println("oldLoad:", currentLoad)
+	}
+
+	bn := len(config.Shards)/len(gids)
+	// ln := len(config.Shards) - len(gids)*bn
+
+	assignedToNew := 0
+
+
+	for k:=0; k<len(gids); k++ {
+		if gids[k]==newJoinID {
+			continue
+		}
+		if assignedToNew >= bn+1 {
+			break
+		}
+		if currentLoad[k] >= bn+2 {
+			// Find the first ones in group gids[k]
+			s := 0
+			for ; s<len(config.Shards); s++ {
+				if config.Shards[s]==gids[k]{
+					config.Shards[s] = newJoinID// previously was gids[k]
+					currentLoad[k]--
+					assignedToNew++
+					if currentLoad[k] < bn+2 {
+						break
+					}
+					if assignedToNew >= bn+1 {
+						goto finish
+					}
+				}
+			}
+		}
+	}
+
+
+	// The second round.
+	for k:=0; k<len(gids); k++ {
+		if gids[k]==newJoinID {
+			continue
+		}
+		if assignedToNew >= bn+1 { // break condition
+			break
+		}
+		if currentLoad[k] >= bn+1 {// Note here is different.
+			// Find the first ones in group gids[k]
+			s := 0
+			for ; s<len(config.Shards); s++ {
+				if config.Shards[s]==gids[k]{
+					config.Shards[s] = newJoinID// previously was gids[k]
+					currentLoad[k]--
+					assignedToNew++
+					if currentLoad[k] < bn+1 {// Note here is different.
+						break
+					}
+					if assignedToNew >= bn+1 { // break condition
+						goto finish
+					}
+				}
+			}
+		}
+	}
+
+	finish:
+
+	currentLoad[idxNew] = assignedToNew
+
+	if enable_debug_rebalance {
+		fmt.Println("Finishing Load:", currentLoad)
+	}
+
+}
+
+func (config *Config) LeaveRebalance(newLeaveID int) {
+	gids := make([] int, len(config.Groups))
+	i := 0
+	for key, _ := range config.Groups {
+		gids[i] = key
+		i++
+	}
+
+	if len(gids)==0 {
+		config.Rebalance()
+		return
+	}
+
+	if enable_debug_rebalance {
+		fmt.Println("LeaveRebalance()")
+	}
+
+	sort.Ints(gids) // Important: this is critical: so the same results will obtained on different sdmaster server!!
+	// Since the keys in map is not ordered!!!!!
+
+
+	currentLoad := make([]int, len(gids))
+	idxShardToAssign := make([]int, 0)
+	// The k-th one that gids[k]==newJOinID is not used.
+
+	idx := make([]int, len(config.Shards))
+
+	for s:=0; s<len(config.Shards); s++ {
+
+		// find the k
+		k := 0
+		for k=0; k<len(gids); k++ {
+			if gids[k]==config.Shards[s] {
+				break
+			}
+		}
+		idx[s] = k
+
+		if k==len(gids) { // cannot find, since it is removed from Groups already.
+			idxShardToAssign = append(idxShardToAssign, s)
+		} else {
+			currentLoad[k]++
+		}
+	}
+
+	if enable_debug_rebalance {
+		fmt.Println("oldLoad:", currentLoad)
+	}
+
+	bn := len(config.Shards)/len(gids)
+	// ln := len(config.Shards) - len(gids)*bn
+
+	idxAssigned := 0
+
+	for k:=0; k<len(gids); k++ {
+		if idxAssigned >= len(idxShardToAssign) {
+			break
+		}
+		for currentLoad[k] <= bn-1 {
+			if config.Shards[idxShardToAssign[idxAssigned]]!=newLeaveID {
+				fmt.Println("Critical Error 4: this should be impossible!")
+			}
+
+			config.Shards[idxShardToAssign[idxAssigned]]= gids[k]
+			currentLoad[k]++
+			idxAssigned++
+
+			if idxAssigned >= len(idxShardToAssign) {
+				goto finish
+			}
+		}
+	}
+
+	// Note here is different.
+	// The second round.
+	for k:=0; k<len(gids); k++ {
+		if idxAssigned >= len(idxShardToAssign) {
+			break
+		}
+		for currentLoad[k] <= bn { // Note here is different.
+			if config.Shards[idxShardToAssign[idxAssigned]]!=newLeaveID {
+				fmt.Println("Critical Error 4: this should be impossible!")
+			}
+
+			config.Shards[idxShardToAssign[idxAssigned]]= gids[k]
+			currentLoad[k]++
+			idxAssigned++
+
+			if idxAssigned >= len(idxShardToAssign) {
+				goto finish
+			}
+		}
+	}
+
+finish:
+
+	if enable_debug_rebalance {
+		fmt.Println("Finishing Load:", currentLoad)
+	}
+}
+
+
+
+// I think this one is not robust to reordering.
+func (config *Config) JoinRebalance_old(newJoinID int) {
+	gids := make([] int, len(config.Groups))
+	i := 0
+	for key, _ := range config.Groups {
+		gids[i] = key
+		i++
+	}
+
+	if len(gids)==1 {
+		config.Rebalance()
+		return
+	}
+
+	sort.Ints(gids) // Important: this is critical: so the same results will obtained on different sdmaster server!!
+	// Since the keys in map is not ordered!!!!!
+
+
+	// len(gids)==0 is impossible due to the new join.
+
+	currentLoad := make([]int, len(gids))
+	// The k-th one that gids[k]==newJOinID is not used.
+
+	idx := make([]int, len(config.Shards))
+
+	for s:=0; s<len(config.Shards); s++ {
+
+		// find the k
+		k := 0
+		for k=0; k<len(gids); k++ {
+			if gids[k]==config.Shards[s] {
+				break
+			}
+		}
+		idx[s] = k
+
+		currentLoad[k]++
+
+		if gids[k]==newJoinID {
+			fmt.Println("Critical Error: this should be impossible!")
+		}
+	}
+
+	fmt.Println("oldLoad:", currentLoad)
+
+	newLoad := make([]int, len(gids))
+	bn := len(config.Shards)/len(gids)
+	ln := len(config.Shards) - len(gids)*bn // the first ln ones take one more
+	for k:=0; k<len(gids); k++ {
+		newLoad[k] = bn
+		if k<ln {
+			newLoad[k]++
+		}
+		if newLoad[k]>currentLoad[k] && gids[k]!=newJoinID {
+			fmt.Println("Critical Error2: this should be impossible!")
+		}
+	}
+	fmt.Println("newLoad:", newLoad)
+
+	// makes currentLoad match new load
+	for i:=0; i<len(config.Shards); i++ {
+		k := idx[i]
+		if currentLoad[k] > newLoad[k] { // this will not touch the neJoinID one
+			config.Shards[i] = newJoinID// previously was gids[k]
+			currentLoad[k]--
+		}
+	}
+
+	fmt.Println("Finishing Load:", currentLoad)
+
+	for k:=0; k<len(gids); k++ {
+		if newLoad[k]!=currentLoad[k] && gids[k]!=newJoinID {
+			fmt.Println("Fattal Error3: this should be impossible!")
+		}
+	}
+
+}
+
+// This one does not pass, max-min can be 2 or larger.
+func (config *Config) JoinRebalance_old2(newJoinID int) {
+	gids := make([] int, len(config.Groups))
+	i := 0
+	for key, _ := range config.Groups {
+		gids[i] = key
+		i++
+	}
+
+	if len(gids)==1 {
+		config.Rebalance()
+		return
+	}
+
+	sort.Ints(gids) // Important: this is critical: so the same results will obtained on different sdmaster server!!
+	// Since the keys in map is not ordered!!!!!
+
+
+	// len(gids)==0 is impossible due to the new join.
+
+	currentLoad := make([]int, len(gids))
+	// The k-th one that gids[k]==newJOinID is not used.
+
+	idx := make([]int, len(config.Shards))
+
+	for s:=0; s<len(config.Shards); s++ {
+
+		// find the k
+		k := 0
+		for k=0; k<len(gids); k++ {
+			if gids[k]==config.Shards[s] {
+				break
+			}
+		}
+		idx[s] = k
+
+		currentLoad[k]++
+
+		if gids[k]==newJoinID {
+			fmt.Println("Critical Error: this should be impossible!")
+		}
+	}
+
+	fmt.Println("oldLoad:", currentLoad)
+
+	bn := len(config.Shards)/len(gids)
+  	// ln := len(config.Shards) - len(gids)*bn
+
+	for i:=0; i<len(config.Shards); i++ {
+		k := idx[i]
+		if currentLoad[k] > bn+1 { // this will not touch the neJoinID one
+			config.Shards[i] = newJoinID// previously was gids[k]
+			currentLoad[k]--
+		}
+	}
+
+	fmt.Println("Finishing Load:", currentLoad)
+
+}
+
+// Untested, probably max-min is too large
+func (config *Config) LeaveRebalance_old(newLeaveID int) {
+	gids := make([] int, len(config.Groups))
+	i := 0
+	for key, _ := range config.Groups {
+		gids[i] = key
+		i++
+	}
+
+	if len(gids)==1 {
+		config.Rebalance()
+		return
+	}
+
+	sort.Ints(gids) // Important: this is critical: so the same results will obtained on different sdmaster server!!
+	// Since the keys in map is not ordered!!!!!
+
+
+	// len(gids)==0 is impossible due to the new join.
+
+	currentLoad := make([]int, len(gids))
+	idxLoadToAssign := make([]int, 0)
+	// The k-th one that gids[k]==newJOinID is not used.
+
+	idx := make([]int, len(config.Shards))
+
+	for s:=0; s<len(config.Shards); s++ {
+
+		// find the k
+		k := 0
+		for k=0; k<len(gids); k++ {
+			if gids[k]==config.Shards[s] {
+				break
+			}
+		}
+		idx[s] = k
+
+		if gids[k]==newLeaveID {
+			idxLoadToAssign = append(idxLoadToAssign, k)
+		}
+
+		currentLoad[k]++
+
+	}
+
+	fmt.Println("oldLoad:", currentLoad)
+
+	bn := len(config.Shards)/len(gids)
+	// ln := len(config.Shards) - len(gids)*bn
+
+	idxAssigned := 0
+	for k:=0; k<len(gids); k++ {
+		if idxAssigned >= len(idxLoadToAssign) {
+			break
+		}
+		if currentLoad[k] < bn+1 {
+			if config.Shards[idxLoadToAssign[idxAssigned]]!=newLeaveID {
+				fmt.Println("Critical Error 4: this should be impossible!")
+			}
+
+			config.Shards[idxLoadToAssign[idxAssigned]]= gids[k]
+			currentLoad[k]++
+		}
+	}
+
+	fmt.Println("Finishing Load:", currentLoad)
+
+}
+
+
 
 // An important rule for the Handler is that the result should be identical whenever executed, and on whichever machine.
 
@@ -190,25 +645,23 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 	}
 	//fmt.Println("Servers joined2", copyMap(newServers))
 
-	config := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
 
 	for gid, servers := range newServers {
-		_, exists := config.Groups[gid]
+		_, exists := newConfig.Groups[gid]
 		if exists {
 			fmt.Println("Warning: JoinHandler(): GID=",gid,"already exists")
 		} else {
 			//fmt.Println("JoinHandler(): GID=", gid,"added")
-			config.Groups[gid] = servers
+			newConfig.Groups[gid] = servers
+			//newConfig.Rebalance()
+			newConfig.JoinRebalance(gid)
 		}
 	}
-
-	config.Rebalance()
 
 	sm.currentConfigNum++
 
 	//fmt.Println("config:",config)
-
-	newConfig := copyConfig(&config)//Config{sm.currentConfigNum, shards, 100}
 
 	//fmt.Println("newConfig:",newConfig)
 
@@ -237,25 +690,23 @@ func (sm *ShardMaster) LeaveHandler (op *Op) (interface{}) {
 		fmt.Println("GIDs leaves", GIDs)
 	}
 
-	config := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
 
 
 	for _, gid := range GIDs {
-		_, exists := config.Groups[gid]
+		_, exists := newConfig.Groups[gid]
 		if exists {
-			delete(config.Groups, gid)
+			delete(newConfig.Groups, gid)
+			//newConfig.Rebalance()
+			newConfig.LeaveRebalance(gid)
 		} else {
 			fmt.Println("Error: LeaveHandler(): GID=",gid,"does not exist")
 		}
 	}
 
-	config.Rebalance()
-
 	sm.currentConfigNum++
 
 	//fmt.Println("config:",config)
-
-	newConfig := copyConfig(&config)//Config{sm.currentConfigNum, shards, 100}
 
 	//fmt.Println("newConfig:",newConfig)
 
@@ -314,14 +765,12 @@ func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
 		fmt.Println("Move GID=", GID, ", Shard=", ShardID)
 	}
 
-	config := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
 
 	// config.Rebalance() // do not do rebalance
-	config.Shards[ShardID] = GID
+	newConfig.Shards[ShardID] = GID
 
 	sm.currentConfigNum++
-
-	newConfig := copyConfig(&config)//Config{sm.currentConfigNum, shards, 100}
 
 	newConfig.Num = sm.currentConfigNum
 
