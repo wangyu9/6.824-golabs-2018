@@ -30,14 +30,14 @@ type ShardMaster struct {
 	// Given:
 	configs []Config // indexed by config num
 
-	pendingOps	map[ClientIndexType] map[RequestIndexType] chan Op
+	pendingOps	map[ClientIndexType] map[RequestIndexType] chan interface{}
 	mostRecentWrite map[ClientIndexType] RequestIndexType
 }
 
-func (sm *ShardMaster) insertToPendingOps(cid ClientIndexType, rid RequestIndexType, value chan Op) {
+func (sm *ShardMaster) insertToPendingOps(cid ClientIndexType, rid RequestIndexType, value chan interface{}) {
 	// map[cid][rid] = value
 	if sm.pendingOps[cid]==nil {
-		sm.pendingOps[cid] = make(map[RequestIndexType] chan Op)
+		sm.pendingOps[cid] = make(map[RequestIndexType] chan interface{})
 	}
 	sm.pendingOps[cid][rid] = value
 }
@@ -92,7 +92,6 @@ func copyMap (originalMap map [int] []string) (targetMap map [int] []string) {
 
 	return
 }
-
 
 func copyNShards (origin [NShards] int) (target [NShards] int) {
 
@@ -257,6 +256,36 @@ func (sm *ShardMaster) QueryHandler (op *Op) (interface{}) {
 	return copyConfig(sm.configs[Num])
 }
 
+func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
+
+	// The Move RPC's arguments are a shard number and a GID. The shardmaster
+	// should create a new configuration in which the shard is assigned to the
+	// group. The purpose of Move is to allow us to test your software. A Join
+	// or Leave following a Move will likely un-do the Move, since Join and
+	// Leave re-balance.
+
+
+	GID := op.Args.(MoveArgs).GID
+	ShardID := op.Args.(MoveArgs).Shard
+
+	fmt.Println("Move GID=", GID, ", Shard=", ShardID)
+
+
+	config := copyConfig(sm.configs[sm.currentConfigNum])// copy, not references!!
+
+	// config.Rebalance() // do not do rebalance
+	config.Shards[ShardID] = GID
+
+	sm.currentConfigNum++
+
+	newConfig := copyConfig(config)//Config{sm.currentConfigNum, shards, 100}
+
+	newConfig.Num = sm.currentConfigNum
+
+	sm.configs = append(sm.configs, newConfig)
+
+	return ""
+}
 
 //The Query RPC's argument is a configuration number. The shardmaster replies
 // with the configuration that has that number. If the number is -1 or bigger
@@ -292,7 +321,7 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 	wrongLeader = false
 	err = OK
 
-	//fmt.Println("Start() called:", op)
+	fmt.Println("Start() called:", op)
 
 	_, startTerm, isLeader := sm.rf.Start(op)
 
@@ -306,15 +335,16 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 
 	sm.mu.Lock()
 
-	newChan := make(chan Op, 1)
+	newChan := make(chan interface{}, 1)
 	sm.insertToPendingOps(clientID, requestID, newChan)
 
 	sm.mu.Unlock()
 
 	select {
-	case op2 := <- newChan:
+	case r := <- newChan:
 
 		// Same as kvraft lab3.
+		// TODO: actually I am not able to handle this situation:
 		// to handle the case in which a leader has called Start()
 		// for a Clerk's RPC, but loses its leadership before the request is committed to the log.
 		// In this case you should arrange for the Clerk to re-send the request to other servers
@@ -322,19 +352,18 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 
 		endTerm := sm.rf.GetCurrentTerm()
 		if endTerm == startTerm {
-			sm.mu.Lock()
 
-			reply = opHandler(&op2)
-
-			sm.mu.Unlock()
-
+			reply = r
 			err = OK
 
 		} else {
 			wrongLeader = true
+
+
+			fmt.Println("Does this ever happen?")
 		}
 
-	case <- time.After( 600*time.Millisecond):
+	case <- time.After( 3000*time.Millisecond):
 		err = "StartOpRaftTimesOut"
 		fmt.Println("Warning: StartOpRaft() times out.")
 	}
@@ -342,10 +371,58 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 }
 
 
+func (sm *ShardMaster) tryApplyOp(op *Op) (r interface{}) {
+
+
+	// In the face of unreliable connections and server failures,
+	// a Clerk may send an RPC multiple times until it finds a kvserver that replies positively.
+	// If a leader fails just after committing an entry to the Raft log,
+	// the Clerk may not receive a reply, and thus may re-send the request to another leader.
+	// Each call to Clerk.Put() or Clerk.Append() should result in just a single execution,
+	// so you will have to ensure that the re-send doesn't result in the servers executing
+	// the request twice.
+
+	clientID, requestID := sm.GetOpIDs(op)
+
+
+	recentReqID, ok := sm.mostRecentWrite[clientID]
+
+	if !ok || recentReqID<requestID {
+		// Apply the non-duplicated Op to the database.
+
+		switch op.Type {
+		case OP_TYPE_JOIN:
+			r = sm.JoinHandler(op)
+		case OP_TYPE_LEAVE:
+			r = sm.LeaveHandler(op)
+		case OP_TYPE_MOVE:
+			r = sm.MoveHandler(op)
+		case OP_TYPE_QUERY:
+			r = sm.QueryHandler(op)
+		}
+		// update the table
+		sm.mostRecentWrite[clientID] = requestID
+
+
+	} else {
+		// the op is duplicated, but still reply ok
+		//if debug_getputappend {
+		//	fmt.Println("Duplicated to PutAppend", op)
+		//}
+	}
+
+
+
+	return
+}
+
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 
-	op := Op{OP_TYPE_JOIN, *args}
+	argsc := JoinArgs{copyMap(args.Servers), args.ClientID, args.RequestID}
+	// TODO: is there necessary?
+
+	op := Op{OP_TYPE_JOIN, argsc}
 
 	wrongLeader, err, _ := sm.StartOpRaft(op, sm.JoinHandler)
 
@@ -371,19 +448,18 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	reply.WrongLeader = wrongLeader
 	reply.Err = err
 
-	// TODO: execute the op
-
-
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 
-	// The Move RPC's arguments are a shard number and a GID. The shardmaster
-	// should create a new configuration in which the shard is assigned to the
-	// group. The purpose of Move is to allow us to test your software. A Join
-	// or Leave following a Move will likely un-do the Move, since Join and
-	// Leave re-balance.
+	op := Op{OP_TYPE_MOVE, *args}
+
+	wrongLeader, err, _ := sm.StartOpRaft(op, sm.MoveHandler)
+
+	reply.WrongLeader = wrongLeader
+	reply.Err = err
+
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
@@ -411,6 +487,12 @@ func (sm *ShardMaster) MainLoop() {
 
 		if msg.CommandValid {
 
+
+			if msg.Command==nil {
+				fmt.Println("Error: msg.Command==nil:", msg, "for server", sm.me, "i.e. raft server", sm.rf.GetServerID())
+			} else {
+
+
 			// Type assertion, see https://stackoverflow.com/questions/18041334/convert-interface-to-int-in-golang
 			op := msg.Command.(Op)
 
@@ -418,14 +500,20 @@ func (sm *ShardMaster) MainLoop() {
 
 			clientID, requestID := sm.GetOpIDs(&op)
 
+			reply := sm.tryApplyOp(&op)
+
 			ch, ok := sm.pendingOps[clientID][requestID]
 
 			if ok {
-				ch <- op
+				go func() {
+					ch <- reply
+				}()
 			} else {
 
 			}
+
 			sm.mu.Unlock() // avoid deadlock
+			}
 		}
 	}
 }
@@ -464,7 +552,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
 	// Your code here.
-	sm.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan Op)
+	sm.pendingOps = make(map[ClientIndexType] map[RequestIndexType] chan interface{})
 	sm.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
 
 	sm.currentConfigNum = 0

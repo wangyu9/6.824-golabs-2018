@@ -62,11 +62,12 @@ const enable_debug_lab_2b = false
 const enable_debug_lab_2c = false
 const enable_debug_lab_3b = false
 const enable_debug_lab_3b2 = false
-const enable_warning_lab3b = false
+
+const enable_warning_lab3b = true
 
 const use_apply_stack = false
 
-const persist_commit_index = false // I think false is more robust.
+const persist_commit_index = false // I think false is more robust, either passed lab2,3.
 
 func randTimeBetween(Lower int64, Upper int64) (time.Duration) {
 	r := time.Duration(Lower+rand.Int63n(Upper-Lower+1))*time.Millisecond
@@ -679,6 +680,11 @@ func (rf *Raft) applyMsg(msg ApplyMsg) {
 
 		rf.applyChan <- msg
 		rf.lastApplied = msg.CommandIndex
+
+		if msg.Command==nil {
+			fmt.Println("Warning: a nil command is applied by Raft server", rf.me)
+		}
+
 		// update the last applied index. Only for valid command.
 		//if persist_commit_index {
 		//	rf.persist()
@@ -1246,7 +1252,7 @@ func (rf *Raft) AppendEntries (args *AppendEntriesArgs, reply *AppendEntriesRepl
 				// In this case, if nothing is done and just waiting until the leader to catch up to date, it may never happen
 				// if the leader does not compacted its log. Triggering an InstallSnapshot is an overkill.
 				reply.Success = false
-				// Necessary to InstallSnapshot
+				// Not Necessary to InstallSnapshot
 				reply.Error = ErrorType_AppendEntries_LOG_MISSING_DUE_TO_COMPACTION
 				//reply.Error = ErrorType_AppendEntries_LOG_WITH_WRONG_TERM
 				reply.BaseLogIndex = max( rf.baseIndex, rf.lastApplied)
@@ -1511,7 +1517,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
-
 	if enable_lab_2b {
 
 		isLeader = false
@@ -1650,9 +1655,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 				if prevLogIndex < rf.baseIndex {
 					// then necessary to install snapshot first.
-					if enable_debug_lab_3b {
-						fmt.Println("prevLogIndex=", prevLogIndex, "is missing from current compacted log with base=", rf.baseIndex)
-					}
+					//if enable_debug_lab_3b {
+						fmt.Println("prevLogIndex=", prevLogIndex, "is missing from current compacted log with base=", rf.baseIndex, "InstallSnapshot is initializing")
+					//}
 
 					//oldBaseIndex := rf.baseIndex
 
@@ -1916,6 +1921,11 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 		}
 
 
+		if rf.nextIndex[serverIndex]<=0 {
+			fmt.Println("Warning: the rf.nextIndex[",serverIndex,"]=", rf.nextIndex[serverIndex], "reset to 1, there is probably an bug")
+			rf.nextIndex[serverIndex] = 1
+		}
+
 
 		// time.Sleep(10*time.Millisecond) // limit the speed to send recursively. TODO: make the number better.
 		// somehow the limit makes  TestFigure8Unreliable2C fails for me.
@@ -1985,6 +1995,8 @@ func (rf *Raft) Kill() {
 		rf.persist()
 		rf.mu.Unlock()
 	}
+
+	fmt.Println("Kill(): server=", rf.me, "log:",rf.log)
 }
 
 
@@ -2839,6 +2851,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.initHeartbeatSender()
 	rf.initHeartbeatMonitor()
 
+	fmt.Println("Raft Server", rf.me,"(Re-)Starts", "Current Term:", rf.currentTerm, "votedFor=", rf.votedFor, "baseIndex=", rf.baseIndex, "log:", rf.log)
+
 	go rf.startCommitChecker()
 
 	if use_apply_stack {
@@ -2877,7 +2891,11 @@ func (rf *Raft) InitInstallSnapshot() {
 	}
 	for i := rf.baseIndex+1; i <= rf.lastApplied; i++ {
 		msg := ApplyMsg{true, rf.getLog(i).Command, i}
-		// rf.applyMsg(msg) // this also updates rf.lastApplied within it.
+		// rf.applyMsg(msg) //this updates rf.lastApplied, should not use it.
+		if rf.getLog(i).Command==nil {
+			fmt.Println("Warning: InitInstallSnapshot() applies nil command, index=", i)
+		}
+
 		rf.applyChan <- msg
 	}
 
@@ -2922,4 +2940,8 @@ func (rf *Raft) SetMaxLogSize(size int) {
 	rf.mu.Lock()
 	rf.maxlogsize = size
 	rf.mu.Unlock()
+}
+
+func (rf *Raft) GetServerID() (int) {
+	return rf.me
 }
