@@ -1666,9 +1666,9 @@ func (rf *Raft) trySendAppendEntriesRecursively(serverIndex int, termWhenStarted
 
 				if prevLogIndex < rf.baseIndex {
 					// then necessary to install snapshot first.
-					//if enable_debug_lab_3b {
+					if enable_debug_lab_3b {
 						fmt.Println("prevLogIndex=", prevLogIndex, "is missing from current compacted log with base=", rf.baseIndex, "InstallSnapshot is initializing")
-					//}
+					}
 
 					//oldBaseIndex := rf.baseIndex
 
