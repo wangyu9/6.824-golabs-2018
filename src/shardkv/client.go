@@ -35,11 +35,18 @@ func nrand() int64 {
 	return x
 }
 
+type ClientIndexType int
+type RequestIndexType int
+
 type Clerk struct {
 	sm       *shardmaster.Clerk
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+
+	clientID	ClientIndexType
+	cachedLeader int // the server ID that the client believe is the current leader.
+	requestID	RequestIndexType // the number of requests have been made.
 }
 
 //
@@ -56,6 +63,12 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
+
+	ck.clientID = ClientIndexType(int(nrand())) // assigned a random number and *hope* there is no conflict... ideally this should be assigned by the kvserver...
+	//fmt.Println("Client", ck.clientID, "initialized")
+	ck.cachedLeader = 0 // set a random initial cacheLeader
+	ck.requestID = 0
+
 	return ck
 }
 
@@ -68,6 +81,10 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{}
 	args.Key = key
+
+	args.RequestID = ck.requestID
+	args.ClientID = ck.clientID
+	ck.requestID++
 
 	for {
 		shard := key2shard(key)
@@ -104,6 +121,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Value = value
 	args.Op = op
 
+	args.RequestID = ck.requestID
+	args.ClientID = ck.clientID
+	ck.requestID++
 
 	for {
 		shard := key2shard(key)
