@@ -60,21 +60,83 @@ type ShardKV struct {
 
 func (kv *ShardKV) GetHandler (op *Op) (interface{}) {
 
-	return ""
+	shardID := key2shard(op.Key.(string))
+
+	value, ok := kv.database[shardID][op.Key.(string)]
+
+	var err Err
+	if ok {
+		err = OK
+	} else {
+		err = ErrNoKey
+	}
+	reply := GetReply{false,err,value} // The first one, wrong Leader is not set here.
+
+	return reply
 }
 
 func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 
-	return ""
+	shardID := key2shard(op.Key.(string))
+
+	value, ok := kv.database[shardID][op.Key.(string)]
+	if ok {
+		kv.database[shardID][op.Key.(string)] = value + op.Value.(string)
+	} else {
+		kv.database[shardID][op.Key.(string)] = op.Value.(string)
+	}
+	reply := PutAppendReply{false, OK}
+
+	return reply
 }
 
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+
+	op := Op{}
+	op.Type = OP_TYPE_GET
+	op.Key = args.Key
+
+	op.ClientID = args.ClientID
+	op.RequestID = args.RequestID
+
+	wrongLeader, err, r := kv.StartOpRaft(op)
+
+	reply.WrongLeader = wrongLeader
+	if !wrongLeader {
+		if err == ErrStartOpRaftTimesOut {
+			// Handle in the same way of wrong leader
+			reply.WrongLeader = true
+		} else {
+			reply.Err = r.(GetReply).Err
+			reply.Value = r.(GetReply).Value
+		}
+	}
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+
+	op := Op{}
+	op.Type = OP_TYPE_PUTAPPEND
+	op.Key = args.Key
+	op.Value = args.Value
+
+	op.ClientID = args.ClientID
+	op.RequestID = args.RequestID
+
+	wrongLeader, err, r := kv.StartOpRaft(op)
+
+	reply.WrongLeader = wrongLeader
+	if !wrongLeader {
+		if err == ErrStartOpRaftTimesOut {
+			// Handle in the same way of wrong leader
+			reply.WrongLeader = true
+		} else {
+			reply.Err = r.(PutAppendReply).Err
+		}
+	}
 }
 
 func (kv *ShardKV)  GetOpIDs(op *Op) (clientID ClientIndexType, requestID RequestIndexType){
@@ -93,7 +155,7 @@ func (kv *ShardKV)  GetOpIDs(op *Op) (clientID ClientIndexType, requestID Reques
 }
 
 
-func (kv *ShardKV) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err Err, reply interface{}) {
+func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interface{}) {
 
 	wrongLeader = false
 	err = OK
@@ -124,17 +186,24 @@ func (kv *ShardKV) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err Err, 
 	case r := <- newChan:
 
 		// Same as kvraft lab3.
-		// TODO: actually I am not able to handle this situation:
 		// to handle the case in which a leader has called Start()
 		// for a Clerk's RPC, but loses its leadership before the request is committed to the log.
 		// In this case you should arrange for the Clerk to re-send the request to other servers
 		// until it finds the new leader.
 
 		endTerm := kv.rf.GetCurrentTerm()
+
 		if endTerm == startTerm {
 
 			reply = r
 			err = OK
+
+			switch op.Type {
+			case OP_TYPE_GET:
+				reply = GetReply{false, r.(GetReply).Err, r.(GetReply).Value}
+			case OP_TYPE_PUTAPPEND:
+				reply = PutAppendReply{false, r.(PutAppendReply).Err}
+			}
 
 		} else {
 			wrongLeader = true
@@ -142,12 +211,13 @@ func (kv *ShardKV) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err Err, 
 		}
 
 	case <- time.After( 4000*time.Millisecond):
-		err = "StartOpRaftTimesOut"
+		err = ErrStartOpRaftTimesOut
 		fmt.Println("Warning: StartOpRaft() times out.")
 	}
 	return
 }
 
+const EventDuplicatedOp = "EventDuplicatedOp"
 
 func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 
@@ -162,32 +232,28 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 
 	clientID, requestID := kv.GetOpIDs(op)
 
-
-	recentReqID, ok := kv.mostRecentWrite[clientID]
-
-	if !ok || recentReqID<requestID {
-		// Apply the non-duplicated Op to the database.
-
-		switch op.Type {
-		case OP_TYPE_PUTAPPEND:
+	switch op.Type {
+	case OP_TYPE_PUTAPPEND:
+		recentReqID, ok := kv.mostRecentWrite[clientID]
+		if !ok || recentReqID<requestID {
+			// Apply the non-duplicated Op to the database.
 			r = kv.PutAppendHandler(op)
-		case OP_TYPE_GET:
-			r = kv.GetHandler(op)
+			// update the table
+			kv.mostRecentWrite[clientID] = requestID
+		} else {
+			// the op is duplicated, but still reply ok
+			//if debug_getputappend {
+			fmt.Println("Duplicated to tryApplyOp()", op)
+			//}
+			//r = EventDuplicatedOp
 		}
-		// update the table
-		kv.mostRecentWrite[clientID] = requestID
-
-
-	} else {
-		// the op is duplicated, but still reply ok
-		//if debug_getputappend {
-		//	fmt.Println("Duplicated to PutAppend", op)
-		//}
+	case OP_TYPE_GET:
+		r = kv.GetHandler(op)
+	default:
+		fmt.Println("Fattal error: tryApplyOp() unrecognized op")
 	}
 
-
-
-	return
+	return r
 }
 
 

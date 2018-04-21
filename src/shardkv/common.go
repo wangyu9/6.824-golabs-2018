@@ -15,6 +15,8 @@ const (
 	ErrWrongGroup = "ErrWrongGroup"
 )
 
+const ErrStartOpRaftTimesOut = "StartOpRaftTimesOut"
+
 type Err string
 
 // Put or Append
