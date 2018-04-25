@@ -53,3 +53,29 @@ type GetReply struct {
 	Err         Err
 	Value       string
 }
+
+
+type ShardDetachArgs struct {
+	ShardID		int
+}
+
+type ShardDetachReply struct {
+	ShardID		int
+	ShardDatabase	map[string] string
+}
+
+type ShardAttachArgs struct {
+	ShardID		int
+	ShardDatabase	map[string] string
+
+	// This is to avoid duplicated attach:
+	ClientID	ClientIndexType
+	RequestID	RequestIndexType
+
+}
+
+type ShardAttachReply struct {
+
+	WrongLeader bool
+	Err         Err
+}

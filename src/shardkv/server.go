@@ -19,6 +19,9 @@ const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
 	OP_TYPE_PUTAPPEND OpType = iota  //  == 1
 	OP_TYPE_GET OpType = iota  //  == 2
+	OP_TYPE_SHARD_DETACH = iota //  == 3
+	OP_TYPE_SHARD_ATTACH = iota //  == 4
+	OP_TYPE_SHARD_INIT = iota // == 5
 )
 
 type Op struct {
@@ -34,6 +37,8 @@ type Op struct {
 	Key		interface{}
 	Value	interface{}
 
+	ArgsShardDetach ShardDetachArgs // used if Type == OP_TYPE_SHARD_DETACH
+	ArgsShardAttach ShardAttachArgs // used if Type == OP_TYPE_SHARD_ATTACH
 }
 
 type fn func(op *Op) (interface{})
@@ -52,24 +57,97 @@ type ShardKV struct {
 
 	mck *shardmaster.Clerk
 
+	// Together are the state of the KV.
 	database	[shardmaster.NShards]map[string] string
+	responsibleShards [shardmaster.NShards] bool
+
 
 	pendingOps	map[int] chan interface{}
 	mostRecentWrite map[ClientIndexType] RequestIndexType
+
+	config shardmaster.Config
+
+	// The "client part": remember to persist the client part.
+	clientID	ClientIndexType
+	requestID	RequestIndexType // the number of requests have been made.
 }
+
+func copyMapTo (originalMap* map [string]string, targetMap* map [string]string) {
+
+	// Clear the target map
+	// targetMap = nil
+	*targetMap = make(map [string]string)
+
+	// Copy from the original map to the target map
+	for key, value := range *originalMap {
+		(*targetMap)[key] = value
+	}
+
+	return
+}
+
+
+func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
+
+	// TODO: Detach the shard
+
+	args := op.ArgsShardDetach
+	shardDatabase := make(map[string] string)
+
+	if kv.responsibleShards[args.ShardID]==true {
+		kv.responsibleShards[args.ShardID] = false
+		copyMapTo(&kv.database[args.ShardID], &shardDatabase)
+		kv.database[args.ShardID] = nil
+	} else {
+		fmt.Println("Error: ShardDetachHandler(): this should not happen, probably duplication detection fails.")
+	}
+
+	reply := ShardDetachReply{args.ShardID, shardDatabase}
+
+	return reply
+}
+
+func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
+
+	// TODO: Attach the shard.
+
+	args := op.ArgsShardAttach
+
+	if kv.responsibleShards[args.ShardID]==false {
+		kv.responsibleShards[args.ShardID] = true
+		kv.database[args.ShardID] = make(map[string] string)
+		copyMapTo(&args.ShardDatabase, &kv.database[args.ShardID])
+		fmt.Println("ShardAttachHandler() attach map=", args.ShardDatabase)
+	} else {
+		fmt.Println("Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails.")
+	}
+
+	reply := ShardAttachReply{false, OK}
+	return reply
+}
+
 
 func (kv *ShardKV) GetHandler (op *Op) (interface{}) {
 
 	shardID := key2shard(op.Key.(string))
-
-	value, ok := kv.database[shardID][op.Key.(string)]
+	key := op.Key.(string)
 
 	var err Err
-	if ok {
-		err = OK
+	value := ""
+
+	if kv.responsibleShards[shardID]==true {
+		v, ok := kv.database[shardID][key]
+		if ok {
+			value = v
+			err = OK
+			fmt.Println("GetHandler() successful get key=", key, "value=", value)
+		} else {
+			err = ErrNoKey
+		}
 	} else {
-		err = ErrNoKey
+		err = ErrWrongGroup
 	}
+
 	reply := GetReply{false,err,value} // The first one, wrong Leader is not set here.
 
 	return reply
@@ -79,17 +157,125 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 
 	shardID := key2shard(op.Key.(string))
 
-	value, ok := kv.database[shardID][op.Key.(string)]
-	if ok {
-		kv.database[shardID][op.Key.(string)] = value + op.Value.(string)
+	key := op.Key.(string)
+	value := op.Value.(string)
+
+	var err Err
+
+	if kv.responsibleShards[shardID]==true {
+		oldValue, ok := kv.database[shardID][key]
+		if ok {// Append if exists
+			kv.database[shardID][key] = oldValue + value
+		} else {// Put if not exists
+			kv.database[shardID][key] = value
+		}
+		err = OK
+		fmt.Println("PutAppendHandler() successful putappend key=", key, "value=", value)
 	} else {
-		kv.database[shardID][op.Key.(string)] = op.Value.(string)
+		err = ErrWrongGroup
 	}
-	reply := PutAppendReply{false, OK}
+
+	reply := PutAppendReply{false, err}
 
 	return reply
 }
 
+func (kv *ShardKV) SendShard(args ShardAttachArgs, newGroup []string) {
+
+	for {
+
+		for i:=0; i<len(newGroup); i++ {
+			server := kv.make_end(newGroup[i])
+
+			reply := ShardAttachReply{}
+
+			ok := server.Call("ShardKV.ShardAttach", &args, &reply)
+			if ok && reply.WrongLeader == false {
+				fmt.Println("SendShard successful")
+				break
+			} else {
+				fmt.Println("SendShard fails, retry at a different server.")
+			}
+		}
+
+		time.Sleep(200*time.Millisecond)
+	}
+}
+
+func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) {
+
+	op := Op{}
+	op.Type = OP_TYPE_SHARD_ATTACH
+
+	op.ClientID = args.ClientID
+	op.RequestID = args.RequestID
+
+	wrongLeader, err, r := kv.StartOpRaft(op)
+
+	reply.WrongLeader = wrongLeader
+	if !wrongLeader {
+		if err == ErrStartOpRaftTimesOut {
+			// Handle in the same way of wrong leader
+			reply.WrongLeader = true
+		} else {
+			reply.Err = r.(ShardAttachReply).Err
+		}
+	}
+}
+
+func (kv *ShardKV) ShardDetach(shardID int, newGroup []string) {
+
+	op := Op {}
+	op.Type = OP_TYPE_SHARD_DETACH
+
+	kv.mu.Lock()
+	op.ClientID = kv.clientID
+	op.RequestID = kv.requestID
+	kv.requestID++
+	kv.mu.Unlock()
+
+	op.ArgsShardDetach = ShardDetachArgs{ShardID:shardID}
+
+	wrongLeader, err, r := kv.StartOpRaft(op)
+	// kv.StartOpRaft(op)
+
+	if !wrongLeader && err==OK {
+		// TODO: initialize the RPC to send the shard.
+
+		args := ShardAttachArgs{}
+		args.ShardID = op.ArgsShardDetach.ShardID
+		args.ClientID = op.ClientID
+		args.RequestID = op.RequestID
+
+		//shardDatabase := make( map[string] string)
+		//copyMapTo(& (r.(ShardDetachReply)), &shardDatabase)
+		shardDatabase := r.(ShardDetachReply)
+
+		copyMapTo(&shardDatabase.ShardDatabase, &args.ShardDatabase)
+
+
+		kv.SendShard(args, newGroup)
+	}
+}
+
+func (kv *ShardKV) InitShard(shardID int) {
+
+	op := Op{}
+	op.Type = OP_TYPE_SHARD_ATTACH
+
+	kv.mu.Lock()
+	op.ClientID = kv.clientID
+	op.RequestID = kv.requestID
+	kv.requestID++
+	kv.mu.Unlock()
+
+	op.ArgsShardAttach.ShardID = shardID
+	// op.ArgsShardAttach.ShardDatabase // empty map
+
+	// wrongLeader, err, r := kv.StartOpRaft(op)
+	kv.StartOpRaft(op)
+
+}
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
@@ -203,6 +389,10 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 				reply = GetReply{false, r.(GetReply).Err, r.(GetReply).Value}
 			case OP_TYPE_PUTAPPEND:
 				reply = PutAppendReply{false, r.(PutAppendReply).Err}
+			case OP_TYPE_SHARD_ATTACH:
+				reply = r.(ShardAttachReply)
+			case OP_TYPE_SHARD_DETACH:
+				reply = r.(ShardDetachReply)
 			}
 
 		} else {
@@ -234,21 +424,47 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 
 	switch op.Type {
 	case OP_TYPE_PUTAPPEND:
+
 		recentReqID, ok := kv.mostRecentWrite[clientID]
 		if !ok || recentReqID<requestID {
 			// Apply the non-duplicated Op to the database.
 			r = kv.PutAppendHandler(op)
 			// update the table
 			kv.mostRecentWrite[clientID] = requestID
+			fmt.Println("Succeed to PutAppend()", op)
 		} else {
+			r = PutAppendReply{false, OK}
 			// the op is duplicated, but still reply ok
 			//if debug_getputappend {
-			fmt.Println("Duplicated to tryApplyOp()", op)
+			fmt.Println("Duplicated to tryApplyOp()::PutAppend()", op)
 			//}
-			//r = EventDuplicatedOp
 		}
 	case OP_TYPE_GET:
 		r = kv.GetHandler(op)
+	case OP_TYPE_SHARD_DETACH:
+
+		// TODO: duplicated detection
+
+		r = kv.ShardDetachHandler(op)
+
+
+	case OP_TYPE_SHARD_ATTACH:
+
+
+		recentReqID, ok := kv.mostRecentWrite[clientID]
+		if !ok || recentReqID<requestID {
+			// Apply the non-duplicated Op to the database.
+			r = kv.ShardAttachHandler(op)
+			// update the table
+			kv.mostRecentWrite[clientID] = requestID
+		} else {
+			r = ShardAttachReply{false, OK}
+			// the op is duplicated, but still reply ok
+			//if debug_getputappend {
+			fmt.Println("Duplicated to tryApplyOp()::ShardAttach()", op)
+			//}
+		}
+
 	default:
 		fmt.Println("Fattal error: tryApplyOp() unrecognized op")
 	}
@@ -307,6 +523,50 @@ func (kv *ShardKV) MainLoop() {
 	}
 }
 
+func (kv *ShardKV) PoolLoop() {
+	for {
+
+		// replica groups consult the master in order to find out what shards to serve
+		// particularly, I made the leader responsible for consulting the master.
+		newConfig := kv.mck.Query(-1)
+
+
+		// The replica group currently holding a shard is responsible for initializing the transfer to the new host replica group.
+
+		kv.mu.Lock()
+
+		oldShards := kv.config.Shards
+		newShards := newConfig.Shards
+
+		for i:=0; i<len(oldShards); i++ {
+			if kv.responsibleShards[i] && newShards[i]!=kv.gid {
+				// TODO: move the shard to the new replica group.
+				// This should be updated in handlers, not here: kv.responsibleShards[i] = false
+				kv.mu.Unlock()
+				groupToSend := kv.config.Groups[newShards[i]]
+				kv.ShardDetach(i, groupToSend)
+				kv.mu.Lock()
+			}
+		}
+
+		// But if there was no current replica group, the server is responsible for the initialization.
+		for i:=0; i<len(newShards); i++ {
+			if !kv.responsibleShards[i] && newShards[i]==kv.gid && oldShards[i]==0 {
+				// This should be updated in handlers, not here: kv.responsibleShards[i] = true
+				kv.mu.Unlock()
+				kv.InitShard(i)
+				kv.mu.Lock()
+			}
+		}
+
+
+		kv.config = newConfig
+		kv.mu.Unlock()
+
+		time.Sleep(100*time.Millisecond)
+	}
+}
+
 //
 // servers[] contains the ports of the servers in this group.
 //
@@ -354,19 +614,29 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.mck = shardmaster.MakeClerk(kv.masters)
 
+	// Don't do this until attach the shard.
+	//for i:=0; i<shardmaster.NShards; i++ {
+	//	kv.database[i] = make(map[string] string)
+	//}
+	// kv.responsibleShards // probably not necessary to initialize a fixed size array.
 	for i:=0; i<shardmaster.NShards; i++ {
-		kv.database[i] = make(map[string] string)
+		kv.responsibleShards[i] = false
 	}
-
 	kv.pendingOps = make(map[int] chan interface{})
 	kv.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
+	// TODO: read these info from persister()
 
 	// Given Code:
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 
+	kv.clientID = ClientIndexType(int(nrand())) // assigned a random number and *hope* there is no conflict... ideally this should be assigned by the kvserver...
+	kv.requestID = 0
+	// TODO: read the clientID and requestID from persister()
+
 	go kv.MainLoop()
+	go kv.PoolLoop()
 
 	return kv
 }
