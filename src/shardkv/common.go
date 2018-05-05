@@ -69,8 +69,8 @@ type ShardAttachArgs struct {
 	ShardDatabase	map[string] string
 
 	// This is to avoid duplicated attach:
-	ClientID	ClientIndexType
-	RequestID	RequestIndexType
+	//ClientID	ClientIndexType
+	//RequestID	RequestIndexType
 
 }
 

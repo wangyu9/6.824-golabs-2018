@@ -65,6 +65,8 @@ type ShardKV struct {
 	pendingOps	map[int] chan interface{}
 	mostRecentWrite map[ClientIndexType] RequestIndexType
 
+	hasSeenFirstConfig bool
+
 	config shardmaster.Config
 
 	// The "client part": remember to persist the client part.
@@ -117,7 +119,8 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 		kv.responsibleShards[args.ShardID] = true
 		kv.database[args.ShardID] = make(map[string] string)
 		copyMapTo(&args.ShardDatabase, &kv.database[args.ShardID])
-		fmt.Println("ShardAttachHandler() attach map=", args.ShardDatabase)
+		fmt.Println("ShardAttachHandler() attach, shardID", args.ShardID," map=", args.ShardDatabase)
+		fmt.Println("table: ", kv.responsibleShards)
 	} else {
 		fmt.Println("Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails.")
 	}
@@ -143,9 +146,11 @@ func (kv *ShardKV) GetHandler (op *Op) (interface{}) {
 			fmt.Println("GetHandler() successful get key=", key, "value=", value)
 		} else {
 			err = ErrNoKey
+			fmt.Println("GetHandler() ErrNoKey")
 		}
 	} else {
 		err = ErrWrongGroup
+		fmt.Println("GetHandler() ErrWrongGroup. table:", kv.responsibleShards)
 	}
 
 	reply := GetReply{false,err,value} // The first one, wrong Leader is not set here.
@@ -173,6 +178,7 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 		fmt.Println("PutAppendHandler() successful putappend key=", key, "value=", value)
 	} else {
 		err = ErrWrongGroup
+		fmt.Println("PutAppendHandler() fails due to ErrWrongGroup to putappend key=", key, "value=", value)
 	}
 
 	reply := PutAppendReply{false, err}
@@ -207,8 +213,9 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 	op := Op{}
 	op.Type = OP_TYPE_SHARD_ATTACH
 
-	op.ClientID = args.ClientID
-	op.RequestID = args.RequestID
+	// RPC call does not need client and request IDs.
+	//op.ClientID = args.ClientID
+	//op.RequestID = args.RequestID
 
 	wrongLeader, err, r := kv.StartOpRaft(op)
 
@@ -218,8 +225,11 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 			// Handle in the same way of wrong leader
 			reply.WrongLeader = true
 		} else {
-			reply.Err = r.(ShardAttachReply).Err
+			*reply = r.(ShardAttachReply)
+			//reply.Err = r.(ShardAttachReply).Err
 		}
+	} else {
+		//reply.WrongLeader = true
 	}
 }
 
@@ -228,11 +238,12 @@ func (kv *ShardKV) ShardDetach(shardID int, newGroup []string) {
 	op := Op {}
 	op.Type = OP_TYPE_SHARD_DETACH
 
-	kv.mu.Lock()
-	op.ClientID = kv.clientID
-	op.RequestID = kv.requestID
-	kv.requestID++
-	kv.mu.Unlock()
+	// Do not need duplicated detection.
+	//kv.mu.Lock()
+	//op.ClientID = kv.clientID
+	//op.RequestID = kv.requestID
+	//kv.requestID++
+	//kv.mu.Unlock()
 
 	op.ArgsShardDetach = ShardDetachArgs{ShardID:shardID}
 
@@ -244,8 +255,8 @@ func (kv *ShardKV) ShardDetach(shardID int, newGroup []string) {
 
 		args := ShardAttachArgs{}
 		args.ShardID = op.ArgsShardDetach.ShardID
-		args.ClientID = op.ClientID
-		args.RequestID = op.RequestID
+		//args.ClientID = op.ClientID
+		//args.RequestID = op.RequestID
 
 		//shardDatabase := make( map[string] string)
 		//copyMapTo(& (r.(ShardDetachReply)), &shardDatabase)
@@ -255,10 +266,14 @@ func (kv *ShardKV) ShardDetach(shardID int, newGroup []string) {
 
 
 		kv.SendShard(args, newGroup)
+	} else {
+		// TODO
 	}
 }
 
 func (kv *ShardKV) InitShard(shardID int) {
+
+	fmt.Println("InitShard(", shardID,") called by server", kv.me)
 
 	op := Op{}
 	op.Type = OP_TYPE_SHARD_ATTACH
@@ -272,6 +287,8 @@ func (kv *ShardKV) InitShard(shardID int) {
 	op.ArgsShardAttach.ShardID = shardID
 	// op.ArgsShardAttach.ShardDatabase // empty map
 
+	// TODO: put this in a loop to make sure it is really initialized.
+
 	// wrongLeader, err, r := kv.StartOpRaft(op)
 	kv.StartOpRaft(op)
 
@@ -279,6 +296,8 @@ func (kv *ShardKV) InitShard(shardID int) {
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+
+	fmt.Println("Get() called with arg=", *args)
 
 	op := Op{}
 	op.Type = OP_TYPE_GET
@@ -294,15 +313,21 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		if err == ErrStartOpRaftTimesOut {
 			// Handle in the same way of wrong leader
 			reply.WrongLeader = true
+			fmt.Println("Get() ErrStartOpRaftTimesOut")
 		} else {
 			reply.Err = r.(GetReply).Err
 			reply.Value = r.(GetReply).Value
 		}
+	} else {
+		//reply.WrongLeader = true
+		fmt.Println("Get() wrong leader")
 	}
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+
+	fmt.Println("PutAppend() called with arg=", *args)
 
 	op := Op{}
 	op.Type = OP_TYPE_PUTAPPEND
@@ -320,7 +345,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			// Handle in the same way of wrong leader
 			reply.WrongLeader = true
 		} else {
-			reply.Err = r.(PutAppendReply).Err
+			*reply = r.(PutAppendReply)
 		}
 	}
 }
@@ -428,29 +453,40 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 		recentReqID, ok := kv.mostRecentWrite[clientID]
 		if !ok || recentReqID<requestID {
 			// Apply the non-duplicated Op to the database.
+			fmt.Println("Server", kv.me, "try to PutAppend()", op, "to group", kv.gid)
 			r = kv.PutAppendHandler(op)
 			// update the table
-			kv.mostRecentWrite[clientID] = requestID
-			fmt.Println("Succeed to PutAppend()", op)
+			if r.(PutAppendReply).Err == OK {
+				// Critical to mark it as written only it really had written something,
+				// query but realized it is the wrong group should not be marked as written.
+				kv.mostRecentWrite[clientID] = requestID
+			}
+
 		} else {
 			r = PutAppendReply{false, OK}
 			// the op is duplicated, but still reply ok
 			//if debug_getputappend {
-			fmt.Println("Duplicated to tryApplyOp()::PutAppend()", op)
+			fmt.Println("Server", kv.me, "Duplicated to tryApplyOp()::PutAppend()", op)
 			//}
 		}
+		fmt.Println("Server", kv.me, "OP_TYPE_PUTAPPEND table:", kv.responsibleShards)
 	case OP_TYPE_GET:
 		r = kv.GetHandler(op)
+		fmt.Println("Server", kv.me, "OP_TYPE_GET table:", kv.responsibleShards)
 	case OP_TYPE_SHARD_DETACH:
 
 		// TODO: duplicated detection
+		// Do not need duplicated detection.
 
 		r = kv.ShardDetachHandler(op)
 
 
 	case OP_TYPE_SHARD_ATTACH:
 
+		// Do not need duplicated detection.
+		r = kv.ShardAttachHandler(op)
 
+		/*
 		recentReqID, ok := kv.mostRecentWrite[clientID]
 		if !ok || recentReqID<requestID {
 			// Apply the non-duplicated Op to the database.
@@ -461,9 +497,9 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 			r = ShardAttachReply{false, OK}
 			// the op is duplicated, but still reply ok
 			//if debug_getputappend {
-			fmt.Println("Duplicated to tryApplyOp()::ShardAttach()", op)
+			fmt.Println("Duplicated to tryApplyOp()::ShardAttach()", op, "ShardID:", op.ArgsShardAttach.ShardID)
 			//}
-		}
+		}*/
 
 	default:
 		fmt.Println("Fattal error: tryApplyOp() unrecognized op")
@@ -526,42 +562,66 @@ func (kv *ShardKV) MainLoop() {
 func (kv *ShardKV) PoolLoop() {
 	for {
 
-		// replica groups consult the master in order to find out what shards to serve
-		// particularly, I made the leader responsible for consulting the master.
-		newConfig := kv.mck.Query(-1)
 
+		_, isleader := kv.rf.GetState()
 
-		// The replica group currently holding a shard is responsible for initializing the transfer to the new host replica group.
+		if isleader {
 
-		kv.mu.Lock()
+			// replica groups consult the master in order to find out what shards to serve
+			// particularly, I made the leader responsible for consulting the master.
+			newConfig := kv.mck.Query(-1)
 
-		oldShards := kv.config.Shards
-		newShards := newConfig.Shards
-
-		for i:=0; i<len(oldShards); i++ {
-			if kv.responsibleShards[i] && newShards[i]!=kv.gid {
-				// TODO: move the shard to the new replica group.
-				// This should be updated in handlers, not here: kv.responsibleShards[i] = false
-				kv.mu.Unlock()
-				groupToSend := kv.config.Groups[newShards[i]]
-				kv.ShardDetach(i, groupToSend)
-				kv.mu.Lock()
+			shouldInitShards := false
+			// For it to have seen the first config
+			if !kv.hasSeenFirstConfig {
+				if newConfig.Num >1 {
+					newConfig = kv.mck.Query(1)
+					kv.hasSeenFirstConfig = true
+					shouldInitShards = true
+				} else if newConfig.Num == 1 {
+					kv.hasSeenFirstConfig = true
+					shouldInitShards = true
+				} else {
+					// Do nothing.
+				}
 			}
-		}
 
-		// But if there was no current replica group, the server is responsible for the initialization.
-		for i:=0; i<len(newShards); i++ {
-			if !kv.responsibleShards[i] && newShards[i]==kv.gid && oldShards[i]==0 {
-				// This should be updated in handlers, not here: kv.responsibleShards[i] = true
-				kv.mu.Unlock()
-				kv.InitShard(i)
-				kv.mu.Lock()
+			// The replica group currently holding a shard is responsible for initializing the transfer to the new host replica group.
+
+			kv.mu.Lock()
+
+			oldShards := kv.config.Shards
+			newShards := newConfig.Shards
+
+
+			for i := 0; i < len(oldShards); i++ {
+				// TODO: this reads from kv.responsibleShards, probably not safe without.
+				if kv.responsibleShards[i] && newShards[i] != kv.gid {
+					// TODO: move the shard to the new replica group.
+					// This should be updated in handlers, not here: kv.responsibleShards[i] = false
+					kv.mu.Unlock()
+					groupToSend := kv.config.Groups[newShards[i]]
+					kv.ShardDetach(i, groupToSend)
+					kv.mu.Lock()
+				}
 			}
+
+			fmt.Println("kv.responsibleShards:",kv.responsibleShards,"NewShards:",newShards, "kv.gid:", kv.gid)
+
+			// But if there was no current replica group, the server is responsible for the initialization.
+			for i := 0; i < len(newShards); i++ {
+				if !kv.responsibleShards[i] && newShards[i] == kv.gid  && shouldInitShards { // TODO: this is not reliable, if the first config is missed; should be put in init function.
+					// This should be updated in handlers, not here: kv.responsibleShards[i] = true
+					kv.mu.Unlock()
+					kv.InitShard(i)
+					kv.mu.Lock()
+				}
+			}
+
+			kv.config = newConfig
+			kv.mu.Unlock()
+
 		}
-
-
-		kv.config = newConfig
-		kv.mu.Unlock()
 
 		time.Sleep(100*time.Millisecond)
 	}
