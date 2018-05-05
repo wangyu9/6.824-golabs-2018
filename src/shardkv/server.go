@@ -10,10 +10,13 @@ import (
 	"shardmaster"
 	"fmt"
 	"time"
+	"bytes"
 )
 
 type OpType int
 //type ServerSeqIndexType int
+
+const enable_debug_lab4b = true
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
@@ -88,6 +91,19 @@ func copyMapTo (originalMap* map [string]string, targetMap* map [string]string) 
 	return
 }
 
+func copyMapTo2 (originalMap* map [ClientIndexType] RequestIndexType, targetMap* map [ClientIndexType] RequestIndexType) {
+
+	// Clear the target map
+	// targetMap = nil
+	*targetMap = make(map [ClientIndexType] RequestIndexType)
+
+	// Copy from the original map to the target map
+	for key, value := range *originalMap {
+		(*targetMap)[key] = value
+	}
+
+	return
+}
 
 func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 
@@ -95,19 +111,29 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 
 	args := op.ArgsShardDetach
 	shardDatabase := make(map[string] string)
+	mostRecentWrite := make(map[ClientIndexType] RequestIndexType)
 
 	if kv.responsibleShards[args.ShardID]==true {
 		kv.responsibleShards[args.ShardID] = false
 		copyMapTo(&kv.database[args.ShardID], &shardDatabase)
+		copyMapTo2(&kv.mostRecentWrite, &mostRecentWrite)
 		kv.database[args.ShardID] = nil
 		fmt.Println("Server", kv.me," ShardDetachHandler() succeed to detach shardID",args.ShardID)
 	} else {
 		fmt.Println("Error: ShardDetachHandler(): this should not happen, probably duplication detection fails.")
 	}
 
-	reply := ShardDetachReply{args.ShardID, shardDatabase}
+	reply := ShardDetachReply{args.ShardID, shardDatabase, mostRecentWrite}
 
 	return reply
+}
+
+func max(a RequestIndexType, b RequestIndexType) (RequestIndexType) {
+	if a > b {
+		return a
+	} else {
+		return b
+	}
 }
 
 func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
@@ -122,6 +148,21 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 		copyMapTo(&args.ShardDatabase, &kv.database[args.ShardID])
 		fmt.Println("ShardAttachHandler() attach, shardID", args.ShardID," map=", args.ShardDatabase)
 		fmt.Println("table: ", kv.responsibleShards)
+
+		// Hint: Be careful about implementing at-most-once semantics (duplicate detection)
+		// for client requests. When groups move shards, they need to move some duplicate
+		// detection state as well as the key/value data. Think about how the receiver of
+		// a shard should update its own duplicate detection state. Is it correct for the
+		// receiver to entirely replace its state with the received one?
+		for key, value := range op.ArgsShardAttach.mostRecentWrite {
+			currentValue, ok := kv.mostRecentWrite[key]
+			if ok {
+				kv.mostRecentWrite[key] = max(currentValue, value)
+			} else {
+				kv.mostRecentWrite[key] = value
+			}
+		}
+
 	} else {
 		fmt.Println("Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails.")
 		fmt.Println("shardID", args.ShardID, "table: ", kv.responsibleShards)
@@ -219,7 +260,7 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 
 	op.ArgsShardAttach.ShardID = args.ShardID
 	copyMapTo(&args.ShardDatabase, &op.ArgsShardAttach.ShardDatabase)
-
+	copyMapTo2(&args.mostRecentWrite, &op.ArgsShardAttach.mostRecentWrite)
 	// RPC call does not need client and request IDs.
 	//op.ClientID = args.ClientID
 	//op.RequestID = args.RequestID
@@ -264,6 +305,7 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 
 		args := ShardAttachArgs{}
 		args.ShardID = op.ArgsShardDetach.ShardID
+
 		// RPC call does not need duplication detection.
 		// args.ClientID = op.ClientID
 		// args.RequestID = op.RequestID
@@ -273,6 +315,7 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 		shardDatabase := r.(ShardDetachReply)
 
 		copyMapTo(&shardDatabase.ShardDatabase, &args.ShardDatabase)
+		copyMapTo2(&shardDatabase.mostRecentWrite, &args.mostRecentWrite)
 
 		kv.SendShard(&args, newGroup)
 	} else {
@@ -531,6 +574,26 @@ func (kv *ShardKV) Kill() {
 	// Your code here, if desired.
 }
 
+func (kv *ShardKV) encodeDatabase() (upperData []byte) {
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	if enable_debug_lab4b {
+		fmt.Println("Encoded Database:", kv.database)
+	}
+
+	e.Encode(kv.database)
+	e.Encode(kv.responsibleShards)
+	e.Encode(kv.mostRecentWrite)
+
+	// kv.hasSeenFirstConfig // this should not be encoded into.
+
+	upperData = w.Bytes()
+
+	return upperData
+}
+
 func (kv *ShardKV) MainLoop() {
 	for {
 		msg := <-kv.applyCh
@@ -566,6 +629,57 @@ func (kv *ShardKV) MainLoop() {
 
 				kv.mu.Unlock() // avoid deadlock
 			}
+		} else {
+
+
+			switch msg.Command.(type) {
+			case raft.InstallSnapshotMsg:
+				{
+					upperData := msg.Command.(raft.InstallSnapshotMsg).SnapshotData
+
+					kv.mu.Lock()
+
+					r := bytes.NewBuffer(upperData)
+					d := labgob.NewDecoder(r)
+
+					if d.Decode(&kv.database) != nil ||
+						d.Decode(&kv.responsibleShards) != nil ||
+						d.Decode(&kv.mostRecentWrite) != nil {
+						fmt.Println("Decode Snapshot fails.")
+						//Success = false
+					} else {
+						//Success = true
+						if enable_debug_lab4b {
+							fmt.Println("Decoded Database:", kv.database, "\n")
+						}
+					}
+
+					kv.hasSeenFirstConfig = true // do not need to initialize shards if started from Snapshot.
+
+					kv.mu.Unlock()
+				}
+			case raft.SaveSnapshotMsg:
+				{// rf.Lock() is Lock() until LogCompactionEnd
+
+
+					kv.mu.Lock()
+
+					upperData := kv.encodeDatabase()
+
+					kv.mu.Unlock()
+
+					// no need to worry kv.database is updated during gap, since rf.mu is locked.
+
+					kv.rf.LogCompactionEnd(upperData)
+
+				}
+			default:
+				{
+					fmt.Println("Error: ApplyMsgListener() unknown type of command msg.")
+				}
+			}
+
+
 		}
 	}
 }
@@ -707,6 +821,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	// Given Code:
 	kv.applyCh = make(chan raft.ApplyMsg)
+
+
+	go kv.MainLoop() // put it before raft init
+
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 
@@ -714,8 +832,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.requestID = 0
 	// TODO: read the clientID and requestID from persister()
 
-	go kv.MainLoop()
 	go kv.PoolLoop()
+
+	kv.rf.SetMaxLogSize( maxraftstate/2 )
 
 	return kv
 }
