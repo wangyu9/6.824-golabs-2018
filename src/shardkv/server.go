@@ -16,7 +16,7 @@ import (
 type OpType int
 //type ServerSeqIndexType int
 
-const enable_debug_lab4b = true
+const enable_debug_lab4b = false
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
@@ -118,9 +118,13 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 		copyMapTo(&kv.database[args.ShardID], &shardDatabase)
 		copyMapTo2(&kv.mostRecentWrite, &mostRecentWrite)
 		kv.database[args.ShardID] = nil
-		fmt.Println("Server", kv.me," ShardDetachHandler() succeed to detach shardID",args.ShardID)
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, " ShardDetachHandler() succeed to detach shardID", args.ShardID)
+		}
 	} else {
-		fmt.Println("Error: ShardDetachHandler(): this should not happen, probably duplication detection fails.")
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "Error: ShardDetachHandler(): this should not happen, probably duplication detection fails.")
+		}
 	}
 
 	reply := ShardDetachReply{args.ShardID, shardDatabase, mostRecentWrite}
@@ -146,15 +150,18 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 		kv.responsibleShards[args.ShardID] = true
 		kv.database[args.ShardID] = make(map[string] string)
 		copyMapTo(&args.ShardDatabase, &kv.database[args.ShardID])
-		fmt.Println("ShardAttachHandler() attach, shardID", args.ShardID," map=", args.ShardDatabase)
-		fmt.Println("table: ", kv.responsibleShards)
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "ShardAttachHandler() attach, shardID", args.ShardID, " map=", args.ShardDatabase)
+			fmt.Println("table: ", kv.responsibleShards)
+		}
 
 		// Hint: Be careful about implementing at-most-once semantics (duplicate detection)
 		// for client requests. When groups move shards, they need to move some duplicate
 		// detection state as well as the key/value data. Think about how the receiver of
 		// a shard should update its own duplicate detection state. Is it correct for the
 		// receiver to entirely replace its state with the received one?
-		for key, value := range op.ArgsShardAttach.mostRecentWrite {
+
+		for key, value := range op.ArgsShardAttach.MostRecentWrite {
 			currentValue, ok := kv.mostRecentWrite[key]
 			if ok {
 				kv.mostRecentWrite[key] = max(currentValue, value)
@@ -164,8 +171,8 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 		}
 
 	} else {
-		fmt.Println("Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails.")
-		fmt.Println("shardID", args.ShardID, "table: ", kv.responsibleShards)
+		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails.")
+		fmt.Println("Server",kv.gid,"-",kv.me,"shardID", args.ShardID, "table: ", kv.responsibleShards)
 	}
 
 	reply := ShardAttachReply{false, OK}
@@ -186,14 +193,20 @@ func (kv *ShardKV) GetHandler (op *Op) (interface{}) {
 		if ok {
 			value = v
 			err = OK
-			fmt.Println("GetHandler() successful get key=", key, "value=", value)
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "GetHandler() successful get key=", key, "value=", value)
+			}
 		} else {
 			err = ErrNoKey
-			fmt.Println("GetHandler() ErrNoKey")
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "GetHandler() ErrNoKey")
+			}
 		}
 	} else {
 		err = ErrWrongGroup
-		fmt.Println("GetHandler() ErrWrongGroup. table:", kv.responsibleShards)
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "GetHandler() ErrWrongGroup. table:", kv.responsibleShards)
+		}
 	}
 
 	reply := GetReply{false,err,value} // The first one, wrong Leader is not set here.
@@ -218,10 +231,14 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 			kv.database[shardID][key] = value
 		}
 		err = OK
-		fmt.Println("Server",kv.me, "PutAppendHandler() successful putappend key=", key, "value=", value)
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "PutAppendHandler() successful putappend key=", key, "value=", value)
+		}
 	} else {
 		err = ErrWrongGroup
-		fmt.Println("Server",kv.me, "PutAppendHandler() fails due to ErrWrongGroup to putappend key=", key, "value=", value, "shardID", shardID, "kv.responsibleShards", kv.responsibleShards )
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "PutAppendHandler() fails due to ErrWrongGroup to putappend key=", key, "value=", value, "shardID", shardID, "kv.responsibleShards", kv.responsibleShards)
+		}
 	}
 
 	reply := PutAppendReply{false, err}
@@ -230,9 +247,9 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 }
 
 func (kv *ShardKV) SendShard(args* ShardAttachArgs, newGroup []string) {
-
-	fmt.Println("SendShard id=", args.ShardID, "started to")
-
+	if enable_debug_lab4b {
+		fmt.Println("Server", kv.gid, "-", kv.me, "SendShard id=", args.ShardID, "started to")
+	}
 	for {
 
 		for i:=0; i<len(newGroup); i++ {
@@ -242,10 +259,14 @@ func (kv *ShardKV) SendShard(args* ShardAttachArgs, newGroup []string) {
 
 			ok := server.Call("ShardKV.ShardAttach", args, &reply)
 			if ok && reply.WrongLeader == false && reply.Err==OK {
-				fmt.Println("SendShard id=", args.ShardID, "successful.")
+				if enable_debug_lab4b {
+					fmt.Println("Server", kv.gid, "-", kv.me, "SendShard id=", args.ShardID, "successful.")
+				}
 				return
 			} else {
-				fmt.Println("SendShard id=", args.ShardID, "fails", "WrongLeader=", reply.WrongLeader, "Err=", reply.Err, ", retry at a different server.")
+				if enable_debug_lab4b {
+					fmt.Println("Server", kv.gid, "-", kv.me, "SendShard id=", args.ShardID, "fails", "WrongLeader=", reply.WrongLeader, "Err=", reply.Err, ", retry at a different server.")
+				}
 			}
 		}
 
@@ -260,7 +281,7 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 
 	op.ArgsShardAttach.ShardID = args.ShardID
 	copyMapTo(&args.ShardDatabase, &op.ArgsShardAttach.ShardDatabase)
-	copyMapTo2(&args.mostRecentWrite, &op.ArgsShardAttach.mostRecentWrite)
+	copyMapTo2(&args.MostRecentWrite, &op.ArgsShardAttach.MostRecentWrite)
 	// RPC call does not need client and request IDs.
 	//op.ClientID = args.ClientID
 	//op.RequestID = args.RequestID
@@ -286,8 +307,9 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 	op := Op {}
 	op.Type = OP_TYPE_SHARD_DETACH
 
-	fmt.Println("Server",kv.me,": ShardDetachAndSend() initialized shardID:",shardID)
-
+	if enable_debug_lab4b {
+		fmt.Println("Server", kv.gid, "-", kv.me, ": ShardDetachAndSend() initialized shardID:", shardID)
+	}
 	// Do not need duplicated detection.
 	//kv.mu.Lock()
 	//op.ClientID = kv.clientID
@@ -315,7 +337,7 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 		shardDatabase := r.(ShardDetachReply)
 
 		copyMapTo(&shardDatabase.ShardDatabase, &args.ShardDatabase)
-		copyMapTo2(&shardDatabase.mostRecentWrite, &args.mostRecentWrite)
+		copyMapTo2(&shardDatabase.MostRecentWrite, &args.MostRecentWrite)
 
 		kv.SendShard(&args, newGroup)
 	} else {
@@ -324,9 +346,9 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 }
 
 func (kv *ShardKV) InitShard(shardID int) {
-
-	fmt.Println("InitShard(", shardID,") called by server", kv.me)
-
+	if enable_debug_lab4b {
+		fmt.Println("Server", kv.gid, "-", kv.me, "InitShard(", shardID, ") called by server", kv.me)
+	}
 	op := Op{}
 	op.Type = OP_TYPE_SHARD_ATTACH
 
@@ -348,9 +370,9 @@ func (kv *ShardKV) InitShard(shardID int) {
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-
-	fmt.Println("Get() called with arg=", *args)
-
+	if enable_debug_lab4b {
+		fmt.Println("Server", kv.gid, "-", kv.me, "Get() called with arg=", *args)
+	}
 	op := Op{}
 	op.Type = OP_TYPE_GET
 	op.Key = args.Key
@@ -365,22 +387,26 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		if err == ErrStartOpRaftTimesOut {
 			// Handle in the same way of wrong leader
 			reply.WrongLeader = true
-			fmt.Println("Get() ErrStartOpRaftTimesOut")
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "Get() ErrStartOpRaftTimesOut")
+			}
 		} else {
 			reply.Err = r.(GetReply).Err
 			reply.Value = r.(GetReply).Value
 		}
 	} else {
 		//reply.WrongLeader = true
-		fmt.Println("Get() wrong leader")
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "Get() wrong leader")
+		}
 	}
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-
-	fmt.Println("PutAppend() called with arg=", *args)
-
+	if enable_debug_lab4b {
+		fmt.Println("Server", kv.gid, "-", kv.me, "PutAppend() called with arg=", *args)
+	}
 	op := Op{}
 	op.Type = OP_TYPE_PUTAPPEND
 	op.Key = args.Key
@@ -474,12 +500,12 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 
 		} else {
 			wrongLeader = true
-			fmt.Println("Does this ever happen?")
+			fmt.Println("Server",kv.gid,"-",kv.me,"Does this ever happen?")
 		}
 
 	case <- time.After( 4000*time.Millisecond):
 		err = ErrStartOpRaftTimesOut
-		fmt.Println("Warning: StartOpRaft() times out.")
+		fmt.Println("Server",kv.gid,"-",kv.me,"Warning: StartOpRaft() times out.")
 	}
 	return
 }
@@ -505,7 +531,9 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 		recentReqID, ok := kv.mostRecentWrite[clientID]
 		if !ok || recentReqID<requestID {
 			// Apply the non-duplicated Op to the database.
-			fmt.Println("Server", kv.me, "try to PutAppend()", op, "to group", kv.gid)
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "try to PutAppend()", op, "to group", kv.gid)
+			}
 			r = kv.PutAppendHandler(op)
 			// update the table
 			if r.(PutAppendReply).Err == OK {
@@ -518,13 +546,19 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 			r = PutAppendReply{false, OK}
 			// the op is duplicated, but still reply ok
 			//if debug_getputappend {
-			fmt.Println("Server", kv.me, "Duplicated to tryApplyOp()::PutAppend()", op)
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "Duplicated to tryApplyOp()::PutAppend()", op)
+			}
 			//}
 		}
-		fmt.Println("Server", kv.me, "OP_TYPE_PUTAPPEND table:", kv.responsibleShards)
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "OP_TYPE_PUTAPPEND table:", kv.responsibleShards)
+		}
 	case OP_TYPE_GET:
 		r = kv.GetHandler(op)
-		fmt.Println("Server", kv.me, "OP_TYPE_GET table:", kv.responsibleShards)
+		if enable_debug_lab4b {
+			fmt.Println("Server", kv.gid, "-", kv.me, "OP_TYPE_GET table:", kv.responsibleShards)
+		}
 	case OP_TYPE_SHARD_DETACH:
 
 		// TODO: duplicated detection
@@ -556,7 +590,7 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 		}*/
 
 	default:
-		fmt.Println("Fattal error: tryApplyOp() unrecognized op")
+		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal error: tryApplyOp() unrecognized op")
 	}
 
 	return r
@@ -572,6 +606,9 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+	if enable_debug_lab4b {
+		fmt.Println("Server", kv.gid, "-", kv.me, "kill()")
+	}
 }
 
 func (kv *ShardKV) encodeDatabase() (upperData []byte) {
@@ -580,7 +617,7 @@ func (kv *ShardKV) encodeDatabase() (upperData []byte) {
 	e := labgob.NewEncoder(w)
 
 	if enable_debug_lab4b {
-		fmt.Println("Encoded Database:", kv.database)
+		fmt.Println("Server",kv.gid,"-",kv.me,"Encoded Database:", kv.database)
 	}
 
 	e.Encode(kv.database)
@@ -604,7 +641,7 @@ func (kv *ShardKV) MainLoop() {
 
 
 			if msg.Command==nil {
-				fmt.Println("Error: msg.Command==nil:", msg, "for server", kv.me, "i.e. raft server", kv.rf.GetServerID())
+				fmt.Println("Server",kv.gid,"-",kv.me,"Error: msg.Command==nil:", msg, "for server", kv.me, "i.e. raft server", kv.rf.GetServerID())
 			} else {
 
 
@@ -694,10 +731,12 @@ func (kv *ShardKV) PoolLoop() {
 		_, isleader := kv.rf.GetState()
 
 		if isleader {
-
+		//if true {
 			// replica groups consult the master in order to find out what shards to serve
 			// particularly, I made the leader responsible for consulting the master.
 			newConfig := kv.mck.Query(-1)
+
+			kv.mu.Lock()
 
 			shouldInitShards := false
 			// For it to have seen the first config
@@ -715,8 +754,7 @@ func (kv *ShardKV) PoolLoop() {
 			}
 
 			// The replica group currently holding a shard is responsible for initializing the transfer to the new host replica group.
-
-			kv.mu.Lock()
+			
 
 			oldShards := kv.config.Shards
 			newShards := newConfig.Shards
@@ -732,14 +770,14 @@ func (kv *ShardKV) PoolLoop() {
 					if len(groupToSend) > 0 {
 						kv.ShardDetachAndSend(i, groupToSend)
 					} else {
-						fmt.Println("Warning: groupToSend is empty, this should be impossible")
+						fmt.Println("Server",kv.gid,"-",kv.me,"Warning: groupToSend is empty, this should be impossible")
 					}
 					kv.mu.Lock()
 				}
 			}
-
-			fmt.Println("kv.responsibleShards:",kv.responsibleShards,"NewShards:",newShards, "kv.gid:", kv.gid)
-
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "PoolLoop() kv.responsibleShards:", kv.responsibleShards, "NewShards:", newShards, "kv.gid:", kv.gid)
+			}
 			// But if there was no current replica group, the server is responsible for the initialization.
 			if shouldInitShards {
 				for i := 0; i < len(newShards); i++ {
@@ -835,6 +873,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	go kv.PoolLoop()
 
 	kv.rf.SetMaxLogSize( maxraftstate/2 )
+
+	if enable_debug_lab4b {
+		fmt.Println("Server", kv.gid, "-", kv.me, "StartServer()")
+	}
 
 	return kv
 }

@@ -63,14 +63,14 @@ type ShardDetachReply struct {
 	ShardID		int
 	ShardDatabase	map[string] string
 
-	mostRecentWrite map[ClientIndexType] RequestIndexType
+	MostRecentWrite map[ClientIndexType] RequestIndexType
 }
 
 type ShardAttachArgs struct {
 	ShardID		int
 	ShardDatabase	map[string] string
 
-	mostRecentWrite map[ClientIndexType] RequestIndexType
+	MostRecentWrite map[ClientIndexType] RequestIndexType
 
 	// This is to avoid duplicated attach:
 	//ClientID	ClientIndexType
