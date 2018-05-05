@@ -62,6 +62,7 @@ type ShardDetachArgs struct {
 type ShardDetachReply struct {
 	ShardID		int
 	ShardDatabase	map[string] string
+	ShouldSend	bool
 
 	MostRecentWrite map[ClientIndexType] RequestIndexType
 }

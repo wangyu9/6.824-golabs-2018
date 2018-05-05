@@ -16,7 +16,7 @@ import (
 type OpType int
 //type ServerSeqIndexType int
 
-const enable_debug_lab4b = false
+const enable_debug_lab4b = true
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
@@ -105,6 +105,7 @@ func copyMapTo2 (originalMap* map [ClientIndexType] RequestIndexType, targetMap*
 	return
 }
 
+// This should be called Try ShardDetachAndSend
 func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 
 	// TODO: Detach the shard
@@ -112,6 +113,8 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 	args := op.ArgsShardDetach
 	shardDatabase := make(map[string] string)
 	mostRecentWrite := make(map[ClientIndexType] RequestIndexType)
+
+	reply := ShardDetachReply{}
 
 	if kv.responsibleShards[args.ShardID]==true {
 		kv.responsibleShards[args.ShardID] = false
@@ -121,13 +124,15 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 		if enable_debug_lab4b {
 			fmt.Println("Server", kv.gid, "-", kv.me, " ShardDetachHandler() succeed to detach shardID", args.ShardID)
 		}
+		reply = ShardDetachReply{args.ShardID, shardDatabase, true, mostRecentWrite}
+
 	} else {
 		if enable_debug_lab4b {
 			fmt.Println("Server", kv.gid, "-", kv.me, "Error: ShardDetachHandler(): this should not happen, probably duplication detection fails.")
 		}
+		reply.ShouldSend = false
 	}
 
-	reply := ShardDetachReply{args.ShardID, shardDatabase, mostRecentWrite}
 
 	return reply
 }
@@ -325,21 +330,27 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 	if !wrongLeader && err==OK {
 		// TODO: initialize the RPC to send the shard.
 
-		args := ShardAttachArgs{}
-		args.ShardID = op.ArgsShardDetach.ShardID
+		reply := r.(ShardDetachReply)
 
-		// RPC call does not need duplication detection.
-		// args.ClientID = op.ClientID
-		// args.RequestID = op.RequestID
+		if reply.ShouldSend {
+			args := ShardAttachArgs{}
+			args.ShardID = op.ArgsShardDetach.ShardID
 
-		//shardDatabase := make( map[string] string)
-		//copyMapTo(& (r.(ShardDetachReply)), &shardDatabase)
-		shardDatabase := r.(ShardDetachReply)
+			// RPC call does not need duplication detection.
+			// args.ClientID = op.ClientID
+			// args.RequestID = op.RequestID
 
-		copyMapTo(&shardDatabase.ShardDatabase, &args.ShardDatabase)
-		copyMapTo2(&shardDatabase.MostRecentWrite, &args.MostRecentWrite)
+			//shardDatabase := make( map[string] string)
+			//copyMapTo(& (r.(ShardDetachReply)), &shardDatabase)
 
-		kv.SendShard(&args, newGroup)
+
+			copyMapTo(&reply.ShardDatabase, &args.ShardDatabase)
+			copyMapTo2(&reply.MostRecentWrite, &args.MostRecentWrite)
+
+			// Critical, this should be done in a go routine, or it may have a cycle of sending.
+			go kv.SendShard(&args, newGroup)
+		}
+
 	} else {
 		// TODO
 	}
@@ -754,30 +765,13 @@ func (kv *ShardKV) PoolLoop() {
 			}
 
 			// The replica group currently holding a shard is responsible for initializing the transfer to the new host replica group.
-			
+
 
 			oldShards := kv.config.Shards
 			newShards := newConfig.Shards
 
 
-			for i := 0; i < len(oldShards); i++ {
-				// kv.responsibleShards[i] TODO: this reads from kv.responsibleShards, probably not safe without.
-				if oldShards[i] == kv.gid && newShards[i] != kv.gid {
-					// TODO: move the shard to the new replica group.
-					// This should be updated in handlers, not here: kv.responsibleShards[i] = false
-					kv.mu.Unlock()
-					groupToSend := newConfig.Groups[newShards[i]]
-					if len(groupToSend) > 0 {
-						kv.ShardDetachAndSend(i, groupToSend)
-					} else {
-						fmt.Println("Server",kv.gid,"-",kv.me,"Warning: groupToSend is empty, this should be impossible")
-					}
-					kv.mu.Lock()
-				}
-			}
-			if enable_debug_lab4b {
-				fmt.Println("Server", kv.gid, "-", kv.me, "PoolLoop() kv.responsibleShards:", kv.responsibleShards, "NewShards:", newShards, "kv.gid:", kv.gid)
-			}
+
 			// But if there was no current replica group, the server is responsible for the initialization.
 			if shouldInitShards {
 				for i := 0; i < len(newShards); i++ {
@@ -788,7 +782,30 @@ func (kv *ShardKV) PoolLoop() {
 						kv.mu.Lock()
 					}
 				}
+			} else {
+				for i := 0; i < len(oldShards); i++ {
+					// kv.responsibleShards[i] TODO: this reads from kv.responsibleShards, probably not safe without.
+					// if oldShards[i] == kv.gid && newShards[i] != kv.gid {
+					if newShards[i] != kv.gid {
+						// TODO: move the shard to the new replica group.
+						// This should be updated in handlers, not here: kv.responsibleShards[i] = false
+						kv.mu.Unlock()
+						groupToSend := newConfig.Groups[newShards[i]]
+						if len(groupToSend) > 0 {
+							kv.ShardDetachAndSend(i, groupToSend)
+						} else {
+							fmt.Println("Server",kv.gid,"-",kv.me,"Warning: groupToSend is empty, this should be impossible")
+						}
+						kv.mu.Lock()
+					}
+				}
 			}
+
+
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "PoolLoop() kv.responsibleShards:", kv.responsibleShards, "NewShards:", newShards, "kv.gid:", kv.gid)
+			}
+
 			kv.config = newConfig
 			kv.mu.Unlock()
 
