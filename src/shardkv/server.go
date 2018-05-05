@@ -100,6 +100,7 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 		kv.responsibleShards[args.ShardID] = false
 		copyMapTo(&kv.database[args.ShardID], &shardDatabase)
 		kv.database[args.ShardID] = nil
+		fmt.Println("Server", kv.me," ShardDetachHandler() succeed to detach shardID",args.ShardID)
 	} else {
 		fmt.Println("Error: ShardDetachHandler(): this should not happen, probably duplication detection fails.")
 	}
@@ -123,6 +124,7 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 		fmt.Println("table: ", kv.responsibleShards)
 	} else {
 		fmt.Println("Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails.")
+		fmt.Println("shardID", args.ShardID, "table: ", kv.responsibleShards)
 	}
 
 	reply := ShardAttachReply{false, OK}
@@ -175,10 +177,10 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 			kv.database[shardID][key] = value
 		}
 		err = OK
-		fmt.Println("PutAppendHandler() successful putappend key=", key, "value=", value)
+		fmt.Println("Server",kv.me, "PutAppendHandler() successful putappend key=", key, "value=", value)
 	} else {
 		err = ErrWrongGroup
-		fmt.Println("PutAppendHandler() fails due to ErrWrongGroup to putappend key=", key, "value=", value)
+		fmt.Println("Server",kv.me, "PutAppendHandler() fails due to ErrWrongGroup to putappend key=", key, "value=", value, "shardID", shardID, "kv.responsibleShards", kv.responsibleShards )
 	}
 
 	reply := PutAppendReply{false, err}
@@ -186,7 +188,9 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 	return reply
 }
 
-func (kv *ShardKV) SendShard(args ShardAttachArgs, newGroup []string) {
+func (kv *ShardKV) SendShard(args* ShardAttachArgs, newGroup []string) {
+
+	fmt.Println("SendShard id=", args.ShardID, "started to")
 
 	for {
 
@@ -195,12 +199,12 @@ func (kv *ShardKV) SendShard(args ShardAttachArgs, newGroup []string) {
 
 			reply := ShardAttachReply{}
 
-			ok := server.Call("ShardKV.ShardAttach", &args, &reply)
-			if ok && reply.WrongLeader == false {
-				fmt.Println("SendShard successful")
-				break
+			ok := server.Call("ShardKV.ShardAttach", args, &reply)
+			if ok && reply.WrongLeader == false && reply.Err==OK {
+				fmt.Println("SendShard id=", args.ShardID, "successful.")
+				return
 			} else {
-				fmt.Println("SendShard fails, retry at a different server.")
+				fmt.Println("SendShard id=", args.ShardID, "fails", "WrongLeader=", reply.WrongLeader, "Err=", reply.Err, ", retry at a different server.")
 			}
 		}
 
@@ -212,6 +216,9 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 
 	op := Op{}
 	op.Type = OP_TYPE_SHARD_ATTACH
+
+	op.ArgsShardAttach.ShardID = args.ShardID
+	copyMapTo(&args.ShardDatabase, &op.ArgsShardAttach.ShardDatabase)
 
 	// RPC call does not need client and request IDs.
 	//op.ClientID = args.ClientID
@@ -233,10 +240,12 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 	}
 }
 
-func (kv *ShardKV) ShardDetach(shardID int, newGroup []string) {
+func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 
 	op := Op {}
 	op.Type = OP_TYPE_SHARD_DETACH
+
+	fmt.Println("Server",kv.me,": ShardDetachAndSend() initialized shardID:",shardID)
 
 	// Do not need duplicated detection.
 	//kv.mu.Lock()
@@ -255,8 +264,9 @@ func (kv *ShardKV) ShardDetach(shardID int, newGroup []string) {
 
 		args := ShardAttachArgs{}
 		args.ShardID = op.ArgsShardDetach.ShardID
-		//args.ClientID = op.ClientID
-		//args.RequestID = op.RequestID
+		// RPC call does not need duplication detection.
+		// args.ClientID = op.ClientID
+		// args.RequestID = op.RequestID
 
 		//shardDatabase := make( map[string] string)
 		//copyMapTo(& (r.(ShardDetachReply)), &shardDatabase)
@@ -264,8 +274,7 @@ func (kv *ShardKV) ShardDetach(shardID int, newGroup []string) {
 
 		copyMapTo(&shardDatabase.ShardDatabase, &args.ShardDatabase)
 
-
-		kv.SendShard(args, newGroup)
+		kv.SendShard(&args, newGroup)
 	} else {
 		// TODO
 	}
@@ -484,8 +493,10 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 	case OP_TYPE_SHARD_ATTACH:
 
 		// Do not need duplicated detection.
+		// Since this is from a RPC call.
 		r = kv.ShardAttachHandler(op)
 
+		// Do need duplicated detection.
 		/*
 		recentReqID, ok := kv.mostRecentWrite[clientID]
 		if !ok || recentReqID<requestID {
@@ -560,6 +571,9 @@ func (kv *ShardKV) MainLoop() {
 }
 
 func (kv *ShardKV) PoolLoop() {
+
+	//time.Sleep(1000*time.Millisecond)
+
 	for {
 
 
@@ -595,13 +609,17 @@ func (kv *ShardKV) PoolLoop() {
 
 
 			for i := 0; i < len(oldShards); i++ {
-				// TODO: this reads from kv.responsibleShards, probably not safe without.
-				if kv.responsibleShards[i] && newShards[i] != kv.gid {
+				// kv.responsibleShards[i] TODO: this reads from kv.responsibleShards, probably not safe without.
+				if oldShards[i] == kv.gid && newShards[i] != kv.gid {
 					// TODO: move the shard to the new replica group.
 					// This should be updated in handlers, not here: kv.responsibleShards[i] = false
 					kv.mu.Unlock()
-					groupToSend := kv.config.Groups[newShards[i]]
-					kv.ShardDetach(i, groupToSend)
+					groupToSend := newConfig.Groups[newShards[i]]
+					if len(groupToSend) > 0 {
+						kv.ShardDetachAndSend(i, groupToSend)
+					} else {
+						fmt.Println("Warning: groupToSend is empty, this should be impossible")
+					}
 					kv.mu.Lock()
 				}
 			}
@@ -609,15 +627,16 @@ func (kv *ShardKV) PoolLoop() {
 			fmt.Println("kv.responsibleShards:",kv.responsibleShards,"NewShards:",newShards, "kv.gid:", kv.gid)
 
 			// But if there was no current replica group, the server is responsible for the initialization.
-			for i := 0; i < len(newShards); i++ {
-				if !kv.responsibleShards[i] && newShards[i] == kv.gid  && shouldInitShards { // TODO: this is not reliable, if the first config is missed; should be put in init function.
-					// This should be updated in handlers, not here: kv.responsibleShards[i] = true
-					kv.mu.Unlock()
-					kv.InitShard(i)
-					kv.mu.Lock()
+			if shouldInitShards {
+				for i := 0; i < len(newShards); i++ {
+					if newShards[i] == kv.gid { // !kv.responsibleShards[i] &&  TODO: this is not reliable, if the first config is missed; should be put in init function.
+						// This should be updated in handlers, not here: kv.responsibleShards[i] = true
+						kv.mu.Unlock()
+						kv.InitShard(i)
+						kv.mu.Lock()
+					}
 				}
 			}
-
 			kv.config = newConfig
 			kv.mu.Unlock()
 
