@@ -57,6 +57,9 @@ type GetReply struct {
 
 type ShardDetachArgs struct {
 	ShardID		int
+
+	ConfigNum	int
+	NewGroup	[]string
 }
 
 type ShardDetachReply struct {
@@ -74,8 +77,8 @@ type ShardAttachArgs struct {
 	MostRecentWrite map[ClientIndexType] RequestIndexType
 
 	// This is to avoid duplicated attach:
-	//ClientID	ClientIndexType
-	//RequestID	RequestIndexType
+	ClientID	ClientIndexType
+	RequestID	RequestIndexType
 
 }
 

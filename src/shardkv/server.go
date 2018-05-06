@@ -27,6 +27,8 @@ const (  // iota is reset to 0
 	OP_TYPE_SHARD_INIT = iota // == 5
 )
 
+const shardmaster_client_index = 1234567654321 // The magic number assigned as the ClientIndexType for the config master.
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -128,9 +130,27 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 
 	} else {
 		if enable_debug_lab4b {
-			fmt.Println("Server", kv.gid, "-", kv.me, "Error: ShardDetachHandler(): this should not happen, probably duplication detection fails.")
+			fmt.Println("Server", kv.gid, "-", kv.me, "ShardDetachHandler(): no such shardID", args.ShardID)
 		}
 		reply.ShouldSend = false
+	}
+
+
+
+	if reply.ShouldSend {
+		args := ShardAttachArgs{}
+		args.ShardID = op.ArgsShardDetach.ShardID
+
+
+		args.ClientID = makeShardClientID( args.ShardID)
+		args.RequestID = makeShardRequestID( op.ArgsShardDetach.ConfigNum, true)
+
+
+		copyMapTo(&reply.ShardDatabase, &args.ShardDatabase)
+		copyMapTo2(&reply.MostRecentWrite, &args.MostRecentWrite)
+
+		// Critical, this should be done in a go routine, or it may have a cycle of sending.
+		go kv.SendShard(&args, op.ArgsShardDetach.NewGroup)
 	}
 
 
@@ -288,8 +308,8 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 	copyMapTo(&args.ShardDatabase, &op.ArgsShardAttach.ShardDatabase)
 	copyMapTo2(&args.MostRecentWrite, &op.ArgsShardAttach.MostRecentWrite)
 	// RPC call does not need client and request IDs.
-	//op.ClientID = args.ClientID
-	//op.RequestID = args.RequestID
+	op.ClientID = args.ClientID
+	op.RequestID = args.RequestID
 
 	wrongLeader, err, r := kv.StartOpRaft(op)
 
@@ -307,7 +327,7 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 	}
 }
 
-func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
+func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string, configNum int) {
 
 	op := Op {}
 	op.Type = OP_TYPE_SHARD_DETACH
@@ -322,16 +342,21 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 	//kv.requestID++
 	//kv.mu.Unlock()
 
-	op.ArgsShardDetach = ShardDetachArgs{ShardID:shardID}
+	op.ClientID = makeShardClientID( shardID)
+	op.RequestID = makeShardRequestID( configNum, false)
 
-	wrongLeader, err, r := kv.StartOpRaft(op)
-	// kv.StartOpRaft(op)
+	op.ArgsShardDetach = ShardDetachArgs{ShardID:shardID, ConfigNum: configNum, NewGroup: newGroup}
+
+	wrongLeader, err, _ := kv.StartOpRaft(op)
+	// wrongLeader, err, r := kv.StartOpRaft(op)
+
 
 	if !wrongLeader && err==OK {
 		// TODO: initialize the RPC to send the shard.
 
-		reply := r.(ShardDetachReply)
+		// reply := r.(ShardDetachReply)
 
+		/* moved to detach handler.
 		if reply.ShouldSend {
 			args := ShardAttachArgs{}
 			args.ShardID = op.ArgsShardDetach.ShardID
@@ -339,6 +364,9 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 			// RPC call does not need duplication detection.
 			// args.ClientID = op.ClientID
 			// args.RequestID = op.RequestID
+
+			args.ClientID = makeShardClientID( shardID)
+			args.RequestID = makeShardRequestID( configNum, true)
 
 			//shardDatabase := make( map[string] string)
 			//copyMapTo(& (r.(ShardDetachReply)), &shardDatabase)
@@ -350,25 +378,43 @@ func (kv *ShardKV) ShardDetachAndSend(shardID int, newGroup []string) {
 			// Critical, this should be done in a go routine, or it may have a cycle of sending.
 			go kv.SendShard(&args, newGroup)
 		}
+		*/
 
 	} else {
 		// TODO
 	}
+
 }
 
-func (kv *ShardKV) InitShard(shardID int) {
+func makeShardClientID(shardID int) (ClientIndexType) {
+	return shardmaster_client_index * shardmaster.NShards + ClientIndexType(shardID)
+}
+
+func makeShardRequestID(configNum int, isAttach bool) (RequestIndexType) {
+	r := RequestIndexType( configNum ) * 2
+	if isAttach {
+		r = r + 1
+		// detach for 0, attach for 1
+	}
+	return r
+}
+
+func (kv *ShardKV) InitShard(shardID int, configNum int) {
 	if enable_debug_lab4b {
 		fmt.Println("Server", kv.gid, "-", kv.me, "InitShard(", shardID, ") called by server", kv.me)
 	}
 	op := Op{}
 	op.Type = OP_TYPE_SHARD_ATTACH
 
+	op.ClientID = makeShardClientID( shardID)
+	op.RequestID = makeShardRequestID( configNum, true)
+	/*
 	kv.mu.Lock()
 	op.ClientID = kv.clientID
 	op.RequestID = kv.requestID
 	kv.requestID++
 	kv.mu.Unlock()
-
+	*/
 	op.ArgsShardAttach.ShardID = shardID
 	// op.ArgsShardAttach.ShardDatabase // empty map
 
@@ -572,17 +618,53 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 		}
 	case OP_TYPE_SHARD_DETACH:
 
-		// TODO: duplicated detection
 		// Do not need duplicated detection.
 
-		r = kv.ShardDetachHandler(op)
+		// r = kv.ShardDetachHandler(op)
+
+		recentReqID, ok := kv.mostRecentWrite[clientID]
+		if !ok || recentReqID<requestID {
+			// Apply the non-duplicated Op to the database.
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "try to Detach()", op, "to group", kv.gid)
+			}
+			r = kv.ShardDetachHandler(op)
+			// update the table
+			kv.mostRecentWrite[clientID] = requestID
+
+		} else {
+			r = ShardDetachReply{ShouldSend: false}
+			// the op is duplicated, but still reply ok
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "Duplicated to tryApplyOp()::Detach()", op)
+			}
+		}
 
 
 	case OP_TYPE_SHARD_ATTACH:
 
 		// Do not need duplicated detection.
 		// Since this is from a RPC call.
-		r = kv.ShardAttachHandler(op)
+		// r = kv.ShardAttachHandler(op)
+
+		recentReqID, ok := kv.mostRecentWrite[clientID]
+		if !ok || recentReqID<requestID {
+			// Apply the non-duplicated Op to the database.
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "try to Attach()", op, "to group", kv.gid)
+			}
+			r = kv.ShardAttachHandler(op)
+			// update the table
+			kv.mostRecentWrite[clientID] = requestID
+
+		} else {
+			// the op is duplicated, but still reply ok
+			r = ShardAttachReply{false, OK}
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "Duplicated to tryApplyOp()::Attach()", op)
+			}
+		}
+
 
 		// Do need duplicated detection.
 		/*
@@ -778,7 +860,7 @@ func (kv *ShardKV) PoolLoop() {
 					if newShards[i] == kv.gid { // !kv.responsibleShards[i] &&  TODO: this is not reliable, if the first config is missed; should be put in init function.
 						// This should be updated in handlers, not here: kv.responsibleShards[i] = true
 						kv.mu.Unlock()
-						kv.InitShard(i)
+						kv.InitShard(i, newConfig.Num)
 						kv.mu.Lock()
 					}
 				}
@@ -793,7 +875,7 @@ func (kv *ShardKV) PoolLoop() {
 						kv.mu.Unlock()
 						groupToSend := newConfig.Groups[newShards[i]]
 						if len(groupToSend) > 0 {
-							kv.ShardDetachAndSend(i, groupToSend)
+							kv.ShardDetachAndSend(i, groupToSend, newConfig.Num)
 						} else {
 							fmt.Println("Server",kv.gid,"-",kv.me,"Warning: groupToSend is empty, this should be impossible")
 						}
