@@ -785,7 +785,8 @@ func (kv *ShardKV) PoolLoop() {
 			} else {
 				for i := 0; i < len(oldShards); i++ {
 					// kv.responsibleShards[i] TODO: this reads from kv.responsibleShards, probably not safe without.
-					// if oldShards[i] == kv.gid && newShards[i] != kv.gid {
+					// if oldShards[i] == kv.gid && newShards[i] != kv.gid { // Critical: this is wrong, since oldShards[i] is out of date, and the server may miss the info,
+					// blocking to try ShardDetachAndSend
 					if newShards[i] != kv.gid {
 						// TODO: move the shard to the new replica group.
 						// This should be updated in handlers, not here: kv.responsibleShards[i] = false
