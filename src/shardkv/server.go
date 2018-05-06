@@ -550,7 +550,7 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 			case OP_TYPE_PUTAPPEND:
 				reply = PutAppendReply{false, r.(PutAppendReply).Err}
 			case OP_TYPE_SHARD_ATTACH:
-				reply = r.(ShardAttachReply)
+				reply = ShardAttachReply{false, r.(ShardAttachReply).Err} //r.(ShardAttachReply)
 			case OP_TYPE_SHARD_DETACH:
 				reply = r.(ShardDetachReply)
 			}
