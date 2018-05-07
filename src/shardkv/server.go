@@ -16,7 +16,7 @@ import (
 type OpType int
 //type ServerSeqIndexType int
 
-const enable_debug_lab4b = false
+const enable_debug_lab4b = true
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
@@ -935,6 +935,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+
+	// wangyu
+	if maxraftstate<(10+1)*2 {
+		maxraftstate = (10+1)*2
+	}
 
 	kv := new(ShardKV)
 	kv.me = me
