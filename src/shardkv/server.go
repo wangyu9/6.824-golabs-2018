@@ -135,9 +135,8 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 		reply.ShouldSend = false
 	}
 
-
-
-	if reply.ShouldSend {
+	// TODO: only necessary for the leader to send the shard.
+	if reply.ShouldSend && kv.me==0 { // TODO: a better determination of leader.
 		args := ShardAttachArgs{}
 		args.ShardID = op.ArgsShardDetach.ShardID
 
@@ -149,6 +148,8 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 		copyMapTo(&reply.ShardDatabase, &args.ShardDatabase)
 		copyMapTo2(&reply.MostRecentWrite, &args.MostRecentWrite)
 
+
+		// TODO: make sure that the shard is not lost, if the kv is killed. Currently cannot guarantee this.
 		// Critical, this should be done in a go routine, or it may have a cycle of sending.
 		go kv.SendShard(&args, op.ArgsShardDetach.NewGroup)
 	}
@@ -307,7 +308,7 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 	op.ArgsShardAttach.ShardID = args.ShardID
 	copyMapTo(&args.ShardDatabase, &op.ArgsShardAttach.ShardDatabase)
 	copyMapTo2(&args.MostRecentWrite, &op.ArgsShardAttach.MostRecentWrite)
-	// RPC call does not need client and request IDs.
+
 	op.ClientID = args.ClientID
 	op.RequestID = args.RequestID
 
@@ -485,7 +486,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 }
 
-func (kv *ShardKV)  GetOpIDs(op *Op) (clientID ClientIndexType, requestID RequestIndexType){
+func (kv *ShardKV) GetOpIDs(op *Op) (clientID ClientIndexType, requestID RequestIndexType){
 
 
 	switch op.Type {
@@ -493,6 +494,12 @@ func (kv *ShardKV)  GetOpIDs(op *Op) (clientID ClientIndexType, requestID Reques
 		clientID = op.ClientID
 		requestID = op.RequestID
 	case OP_TYPE_GET:
+		clientID = op.ClientID
+		requestID = op.RequestID
+	case OP_TYPE_SHARD_ATTACH:
+		clientID = op.ClientID
+		requestID = op.RequestID
+	case OP_TYPE_SHARD_DETACH:
 		clientID = op.ClientID
 		requestID = op.RequestID
 	}
