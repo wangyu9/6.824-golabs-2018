@@ -136,7 +136,7 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 	}
 
 	// TODO: only necessary for the leader to send the shard.
-	if reply.ShouldSend && kv.me==0 { // TODO: a better determination of leader.
+	if reply.ShouldSend { // TODO: a better determination of leader: this one does not work && kv.me==0
 		args := ShardAttachArgs{}
 		args.ShardID = op.ArgsShardDetach.ShardID
 
@@ -859,7 +859,9 @@ func (kv *ShardKV) PoolLoop() {
 			oldShards := kv.config.Shards
 			newShards := newConfig.Shards
 
-
+			if enable_debug_lab4b {
+				fmt.Println("Server", kv.gid, "-", kv.me, "PoolLoop() kv.responsibleShards:", kv.responsibleShards, "NewShards:", newShards, "kv.gid:", kv.gid)
+			}
 
 			// But if there was no current replica group, the server is responsible for the initialization.
 			if shouldInitShards {
@@ -873,15 +875,16 @@ func (kv *ShardKV) PoolLoop() {
 				}
 			} else {
 				for i := 0; i < len(oldShards); i++ {
-					// kv.responsibleShards[i] TODO: this reads from kv.responsibleShards, probably not safe without.
+					// kv.responsibleShards[i]  : this reads from kv.responsibleShards, probably not safe without.
 					// if oldShards[i] == kv.gid && newShards[i] != kv.gid { // Critical: this is wrong, since oldShards[i] is out of date, and the server may miss the info,
 					// blocking to try ShardDetachAndSend
-					if newShards[i] != kv.gid {
-						// TODO: move the shard to the new replica group.
+					if kv.responsibleShards[i] && newShards[i] != kv.gid {
+						// detach and move the shard to the new replica group.
 						// This should be updated in handlers, not here: kv.responsibleShards[i] = false
 						kv.mu.Unlock()
 						groupToSend := newConfig.Groups[newShards[i]]
 						if len(groupToSend) > 0 {
+							// TODO optional optimize: read from local kv.responsibleShards before insert to raft.
 							kv.ShardDetachAndSend(i, groupToSend, newConfig.Num)
 						} else {
 							fmt.Println("Server",kv.gid,"-",kv.me,"Warning: groupToSend is empty, this should be impossible")
@@ -889,11 +892,6 @@ func (kv *ShardKV) PoolLoop() {
 						kv.mu.Lock()
 					}
 				}
-			}
-
-
-			if enable_debug_lab4b {
-				fmt.Println("Server", kv.gid, "-", kv.me, "PoolLoop() kv.responsibleShards:", kv.responsibleShards, "NewShards:", newShards, "kv.gid:", kv.gid)
 			}
 
 			kv.config = newConfig
