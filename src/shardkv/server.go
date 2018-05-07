@@ -16,7 +16,7 @@ import (
 type OpType int
 //type ServerSeqIndexType int
 
-const enable_debug_lab4b = true
+const enable_debug_lab4b = false
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
