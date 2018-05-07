@@ -965,7 +965,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	labgob.Register(Op{})
 
 	// wangyu
-	if maxraftstate<(10+1)*2 {
+	if maxraftstate>0 && maxraftstate<(10+1)*2 {
 		maxraftstate = (10+1)*2
 	}
 
