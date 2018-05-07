@@ -16,15 +16,17 @@ import (
 type OpType int
 //type ServerSeqIndexType int
 
-const enable_debug_lab4b = true
+const enable_debug_lab4b = false
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
-	OP_TYPE_PUTAPPEND OpType = iota  //  == 1
-	OP_TYPE_GET OpType = iota  //  == 2
-	OP_TYPE_SHARD_DETACH = iota //  == 3
-	OP_TYPE_SHARD_ATTACH = iota //  == 4
-	OP_TYPE_SHARD_INIT = iota // == 5
+	//OP_TYPE_PUTAPPEND OpType = iota  //  == 1
+	OP_TYPE_APPEND OpType = iota
+	OP_TYPE_GET OpType = iota  //  ==
+	OP_TYPE_SHARD_DETACH = iota //  ==
+	OP_TYPE_SHARD_ATTACH = iota //  ==
+	OP_TYPE_SHARD_INIT = iota // ==
+	OP_TYPE_PUT OpType = iota
 )
 
 const shardmaster_client_index = 1234567654321 // The magic number assigned as the ClientIndexType for the config master.
@@ -250,12 +252,23 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 	var err Err
 
 	if kv.responsibleShards[shardID]==true {
-		oldValue, ok := kv.database[shardID][key]
-		if ok {// Append if exists
-			kv.database[shardID][key] = oldValue + value
-		} else {// Put if not exists
-			kv.database[shardID][key] = value
+		if false {
+			// my previous understanding.
+			oldValue, ok := kv.database[shardID][key]
+			if ok {// Append if exists
+				kv.database[shardID][key] = oldValue + value
+			} else {// Put if not exists
+				kv.database[shardID][key] = value
+			}
+		} else {
+			oldValue, ok := kv.database[shardID][key]
+			if op.Type==OP_TYPE_PUT || !ok {// Put in case to Append but not exists
+				kv.database[shardID][key] = value
+			} else {
+				kv.database[shardID][key] = oldValue + value
+			}
 		}
+
 		err = OK
 		if enable_debug_lab4b {
 			fmt.Println("Server", kv.gid, "-", kv.me, "PutAppendHandler() successful putappend key=", key, "value=", value)
@@ -466,7 +479,12 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		fmt.Println("Server", kv.gid, "-", kv.me, "PutAppend() called with arg=", *args)
 	}
 	op := Op{}
-	op.Type = OP_TYPE_PUTAPPEND
+	//op.Type = OP_TYPE_PUTAPPEND
+	if args.Op == "Put" {
+		op.Type = OP_TYPE_PUT
+	} else {
+		op.Type = OP_TYPE_APPEND
+	}
 	op.Key = args.Key
 	op.Value = args.Value
 
@@ -490,7 +508,13 @@ func (kv *ShardKV) GetOpIDs(op *Op) (clientID ClientIndexType, requestID Request
 
 
 	switch op.Type {
-	case OP_TYPE_PUTAPPEND:
+	//case OP_TYPE_PUTAPPEND:
+	//	clientID = op.ClientID
+	//		requestID = op.RequestID
+	case OP_TYPE_PUT:
+		clientID = op.ClientID
+		requestID = op.RequestID
+	case OP_TYPE_APPEND:
 		clientID = op.ClientID
 		requestID = op.RequestID
 	case OP_TYPE_GET:
@@ -554,7 +578,11 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 			switch op.Type {
 			case OP_TYPE_GET:
 				reply = GetReply{false, r.(GetReply).Err, r.(GetReply).Value}
-			case OP_TYPE_PUTAPPEND:
+			//case OP_TYPE_PUTAPPEND:
+			//	reply = PutAppendReply{false, r.(PutAppendReply).Err}
+			case OP_TYPE_PUT:
+				reply = PutAppendReply{false, r.(PutAppendReply).Err}
+			case OP_TYPE_APPEND:
 				reply = PutAppendReply{false, r.(PutAppendReply).Err}
 			case OP_TYPE_SHARD_ATTACH:
 				reply = ShardAttachReply{false, r.(ShardAttachReply).Err} //r.(ShardAttachReply)
@@ -589,9 +617,9 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 
 	clientID, requestID := kv.GetOpIDs(op)
 
-	switch op.Type {
-	case OP_TYPE_PUTAPPEND:
-
+	switch {
+	//case op.Type == OP_TYPE_PUTAPPEND:
+	case op.Type == OP_TYPE_PUT || op.Type == OP_TYPE_APPEND:
 		recentReqID, ok := kv.mostRecentWrite[clientID]
 		if !ok || recentReqID<requestID {
 			// Apply the non-duplicated Op to the database.
@@ -618,12 +646,12 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 		if enable_debug_lab4b {
 			fmt.Println("Server", kv.gid, "-", kv.me, "OP_TYPE_PUTAPPEND table:", kv.responsibleShards)
 		}
-	case OP_TYPE_GET:
+	case op.Type == OP_TYPE_GET:
 		r = kv.GetHandler(op)
 		if enable_debug_lab4b {
 			fmt.Println("Server", kv.gid, "-", kv.me, "OP_TYPE_GET table:", kv.responsibleShards)
 		}
-	case OP_TYPE_SHARD_DETACH:
+	case op.Type == OP_TYPE_SHARD_DETACH:
 
 		// Do not need duplicated detection.
 
@@ -648,7 +676,7 @@ func (kv *ShardKV) tryApplyOp(op *Op) (r interface{}) {
 		}
 
 
-	case OP_TYPE_SHARD_ATTACH:
+	case op.Type == OP_TYPE_SHARD_ATTACH:
 
 		// Do not need duplicated detection.
 		// Since this is from a RPC call.
