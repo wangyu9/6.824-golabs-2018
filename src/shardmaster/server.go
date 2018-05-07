@@ -919,6 +919,15 @@ func (sm *ShardMaster) tryApplyOp(op *Op) (r interface{}) {
 		//if debug_getputappend {
 		//	fmt.Println("Duplicated to PutAppend", op)
 		//}
+
+		switch op.Type {
+		case OP_TYPE_JOIN:
+		case OP_TYPE_LEAVE:
+		case OP_TYPE_MOVE:
+		case OP_TYPE_QUERY:
+			r = sm.QueryHandler(op)
+		}
+
 	}
 
 
