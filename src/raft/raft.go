@@ -470,7 +470,7 @@ func (rf *Raft) FakeLogCompaction() { // TODO: remove this later
 
 
 func (rf *Raft) logCompactionCondition() (bool) {
-	return rf.maxlogsize > 1 && rf.persister.RaftStateSize() > rf.maxlogsize
+	return rf.maxlogsize >= 1 && rf.persister.RaftStateSize() > rf.maxlogsize
 }
 
 // used only if enable_incrementing_output==true

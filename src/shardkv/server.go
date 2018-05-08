@@ -109,6 +109,26 @@ func copyMapTo2 (originalMap* map [ClientIndexType] RequestIndexType, targetMap*
 	return
 }
 
+func (kv *ShardKV) checkDatabaseInvariant() {
+
+	if !enable_debug_lab4b {
+		return
+	}
+
+	for k :=0; k < shardmaster.NShards; k++ {
+		if (kv.database[k] == nil && kv.responsibleShards[k]) || (kv.database[k]!=nil && !kv.responsibleShards[k]) {
+			fmt.Println("checkDatabaseInvariant() fails.")
+			{
+				for k2 :=0; k2 < shardmaster.NShards; k2++ {
+					fmt.Println("Server", kv.gid, "-", kv.me, "-",k2,":", len(kv.database[k2]))
+				}
+				fmt.Println("Server", kv.gid, "-", kv.me,":", kv.responsibleShards)
+				fmt.Println("here")
+			}
+		}
+	}
+}
+
 // This should be called Try ShardDetachAndSend
 func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 
@@ -118,6 +138,8 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 	shardDatabase := make(map[string] string)
 	mostRecentWrite := make(map[ClientIndexType] RequestIndexType)
 
+	kv.checkDatabaseInvariant()
+
 	reply := ShardDetachReply{}
 
 	if kv.responsibleShards[args.ShardID]==true {
@@ -125,8 +147,11 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 		copyMapTo(&kv.database[args.ShardID], &shardDatabase)
 		copyMapTo2(&kv.mostRecentWrite, &mostRecentWrite)
 		kv.database[args.ShardID] = nil
+		kv.database[args.ShardID] = make(map[string] string)
+		kv.database[args.ShardID] = nil
 		if enable_debug_lab4b {
 			fmt.Println("Server", kv.gid, "-", kv.me, " ShardDetachHandler() succeed to detach shardID", args.ShardID)
+			kv.checkDatabaseInvariant()
 		}
 		reply = ShardDetachReply{args.ShardID, shardDatabase, true, mostRecentWrite}
 
@@ -174,6 +199,8 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 	// TODO: Attach the shard.
 
 
+	kv.checkDatabaseInvariant()
+
 	args := op.ArgsShardAttach
 
 	if op.ArgsShardAttach.IsInit {
@@ -182,6 +209,7 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 
 	if kv.responsibleShards[args.ShardID]==false {
 		kv.responsibleShards[args.ShardID] = true
+		kv.database[args.ShardID] = nil
 		kv.database[args.ShardID] = make(map[string] string)
 		copyMapTo(&args.ShardDatabase, &kv.database[args.ShardID])
 		if enable_debug_lab4b {
@@ -209,6 +237,8 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 		fmt.Println("Server",kv.gid,"-",kv.me,"shardID", args.ShardID, "table: ", kv.responsibleShards)
 	}
 
+	kv.checkDatabaseInvariant()
+
 	reply := ShardAttachReply{false, OK}
 	return reply
 }
@@ -218,6 +248,8 @@ func (kv *ShardKV) GetHandler (op *Op) (interface{}) {
 
 	shardID := key2shard(op.Key.(string))
 	key := op.Key.(string)
+
+	kv.checkDatabaseInvariant()
 
 	var err Err
 	value := ""
@@ -245,6 +277,8 @@ func (kv *ShardKV) GetHandler (op *Op) (interface{}) {
 
 	reply := GetReply{false,err,value} // The first one, wrong Leader is not set here.
 
+	kv.checkDatabaseInvariant()
+
 	return reply
 }
 
@@ -254,6 +288,8 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 
 	key := op.Key.(string)
 	value := op.Value.(string)
+
+	kv.checkDatabaseInvariant()
 
 	var err Err
 
@@ -287,6 +323,8 @@ func (kv *ShardKV) PutAppendHandler (op *Op) (interface{}) {
 	}
 
 	reply := PutAppendReply{false, err}
+
+	kv.checkDatabaseInvariant()
 
 	return reply
 }
@@ -458,6 +496,24 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	if enable_debug_lab4b {
 		fmt.Println("Server", kv.gid, "-", kv.me, "Get() called with arg=", *args)
 	}
+
+	if false {
+		// An Optional Optimization to avoid no necessary Get
+		//
+		kv.mu.Lock()
+
+		shardID := key2shard(args.Key)
+		if !kv.responsibleShards[shardID] {
+			// The data might be stale, but this is fine: the kv will figure out eventually and the client will retry later.
+			// This avoid inserting not necessary entries to the log.
+			reply.WrongLeader = true // reply.Err = ErrWrongGroup
+			kv.mu.Unlock()
+			return
+		}
+		kv.mu.Unlock()
+	}
+
+
 	op := Op{}
 	op.Type = OP_TYPE_GET
 	op.Key = args.Key
@@ -492,6 +548,24 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if enable_debug_lab4b {
 		fmt.Println("Server", kv.gid, "-", kv.me, "PutAppend() called with arg=", *args)
 	}
+
+	if false {
+		// An Optional Optimization to avoid no necessary PutAppend
+		// Cannot put this too earlier:
+		kv.mu.Lock()
+
+		shardID := key2shard(args.Key)
+		if !kv.responsibleShards[shardID] {
+			// The data might be stale, but this is fine: the kv will figure out eventually and the client will retry later.
+			// This avoid inserting not necessary entries to the log.
+			reply.WrongLeader = true// reply.Err = ErrWrongGroup
+			kv.mu.Unlock()
+			return
+		}
+		kv.mu.Unlock()
+	}
+
+
 	op := Op{}
 	//op.Type = OP_TYPE_PUTAPPEND
 	if args.Op == "Put" {
@@ -762,12 +836,27 @@ func (kv *ShardKV) encodeDatabase() (upperData []byte) {
 		fmt.Println("Server",kv.gid,"-",kv.me,"Encoded Database:", kv.database)
 	}
 
+	kv.checkDatabaseInvariant()
+
 	e.Encode(kv.database)
 	e.Encode(kv.hasSeenFirstConfig)
 	e.Encode(kv.responsibleShards)
 	e.Encode(kv.mostRecentWrite)
 
+	kv.checkDatabaseInvariant()
+
 	upperData = w.Bytes()
+
+	if false {
+		fmt.Println("upperData size:", len(upperData))
+		w2 := new(bytes.Buffer)
+		e2 := labgob.NewEncoder(w2)
+		e2.Encode(upperData)
+		upperData2 := w2.Bytes()
+		fmt.Println("upperData2 size:", len(upperData2))
+
+		fmt.Println("Server",kv.gid,"-",kv.me,"Encoded Database:", kv.database, "\nmostRecentWrite", kv.mostRecentWrite)
+	}
 
 	return upperData
 }
@@ -813,9 +902,13 @@ func (kv *ShardKV) MainLoop() {
 			switch msg.Command.(type) {
 			case raft.InstallSnapshotMsg:
 				{
+
+
 					upperData := msg.Command.(raft.InstallSnapshotMsg).SnapshotData
 
 					kv.mu.Lock()
+
+					kv.checkDatabaseInvariant()
 
 					r := bytes.NewBuffer(upperData)
 					d := labgob.NewDecoder(r)
@@ -826,12 +919,25 @@ func (kv *ShardKV) MainLoop() {
 						d.Decode(&kv.mostRecentWrite) != nil {
 						fmt.Println("Decode Snapshot fails.")
 						//Success = false
+
 					} else {
 						//Success = true
 						if enable_debug_lab4b {
 							fmt.Println("Decoded Database:", kv.database, "\n")
 						}
+						// I do not understand why the code is necessary, but without it my code fails to pass the Test: shard deletion (challenge 1) ...
+						for k :=0; k < shardmaster.NShards; k++ {
+							if kv.database[k]!=nil && !kv.responsibleShards[k] {
+								// This does not hold wiredly:
+								//if len(kv.database[k])>0 {
+								//	fmt.Println("Server",kv.gid,"-",kv.me, "Error: database does not match with the responsibleShards")
+								//}
+								kv.database[k] = nil
+							}
+						}
 					}
+
+					kv.checkDatabaseInvariant()
 
 					//for i:=0; i<shardmaster.NShards; i++ {
 					//	kv.hasSeenFirstConfig[i] = true // do not need to initialize shards if started from Snapshot.
@@ -1005,9 +1111,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	labgob.Register(Op{})
 
 	// wangyu
-	if maxraftstate>=0 && maxraftstate<(1+2)*2 {
-		maxraftstate = (1+2)*2
-	}
+	//if maxraftstate>=0 && maxraftstate<(1+2)*2 {
+	//	maxraftstate = (1+2)*2
+	//}
 
 	kv := new(ShardKV)
 	kv.me = me
@@ -1051,7 +1157,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	go kv.PoolLoop()
 
-	kv.rf.SetMaxLogSize( maxraftstate/2 )
+	kv.rf.SetMaxLogSize( maxraftstate )
 
 	if enable_debug_lab4b {
 		fmt.Println("Server", kv.gid, "-", kv.me, "StartServer()")
