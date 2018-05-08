@@ -210,11 +210,6 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 
 	if kv.responsibleShards[args.ShardID]==false {
 
-	}else {
-		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails. Op:", op)
-		fmt.Println("Server",kv.gid,"-",kv.me,"shardID", args.ShardID, "table: ", kv.responsibleShards)
-	}
-	if true {
 		kv.responsibleShards[args.ShardID] = true
 		kv.database[args.ShardID] = nil
 		kv.database[args.ShardID] = make(map[string] string)
@@ -238,6 +233,9 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 				kv.mostRecentWrite[key] = value
 			}
 		}
+	} else {
+		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails. Op:", op)
+		fmt.Println("Server",kv.gid,"-",kv.me,"shardID", args.ShardID, "table: ", kv.responsibleShards)
 	}
 
 	kv.checkDatabaseInvariant()
@@ -689,9 +687,10 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 			}
 		}
 
-	case <- time.After( 4000*time.Millisecond):
+	case <- time.After( 600*time.Millisecond):
 		err = ErrStartOpRaftTimesOut
-		if enable_warning_lab4b {
+		// if enable_warning_lab4b
+		{
 			// TODO: I think this should be OK, but I did not check it carefully.
 			fmt.Println("Server", kv.gid, "-", kv.me, "Warning: StartOpRaft() times out. ")
 		}
