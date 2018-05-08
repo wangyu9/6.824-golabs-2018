@@ -17,6 +17,7 @@ type OpType int
 //type ServerSeqIndexType int
 
 const enable_debug_lab4b = false
+const enable_warning_lab4b = true
 
 const (  // iota is reset to 0
 	OP_TYPE_DEFAULT OpType = iota  //  == 0
@@ -111,7 +112,7 @@ func copyMapTo2 (originalMap* map [ClientIndexType] RequestIndexType, targetMap*
 
 func (kv *ShardKV) checkDatabaseInvariant() {
 
-	if !enable_debug_lab4b {
+	if !enable_debug_lab4b && !enable_warning_lab4b {
 		return
 	}
 
@@ -208,6 +209,12 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 	}
 
 	if kv.responsibleShards[args.ShardID]==false {
+
+	}else {
+		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails. Op:", op)
+		fmt.Println("Server",kv.gid,"-",kv.me,"shardID", args.ShardID, "table: ", kv.responsibleShards)
+	}
+	if true {
 		kv.responsibleShards[args.ShardID] = true
 		kv.database[args.ShardID] = nil
 		kv.database[args.ShardID] = make(map[string] string)
@@ -231,10 +238,6 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 				kv.mostRecentWrite[key] = value
 			}
 		}
-
-	} else {
-		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails. Op:", op)
-		fmt.Println("Server",kv.gid,"-",kv.me,"shardID", args.ShardID, "table: ", kv.responsibleShards)
 	}
 
 	kv.checkDatabaseInvariant()
@@ -680,12 +683,18 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 
 		} else {
 			wrongLeader = true
-			fmt.Println("Server",kv.gid,"-",kv.me,"Does this ever happen?")
+			if enable_warning_lab4b {
+				// TODO: this might be OK, but I did not check it carefully.
+				fmt.Println("Server", kv.gid, "-", kv.me, "Does this ever happen?")
+			}
 		}
 
 	case <- time.After( 4000*time.Millisecond):
 		err = ErrStartOpRaftTimesOut
-		fmt.Println("Server",kv.gid,"-",kv.me,"Warning: StartOpRaft() times out. Potential Critical Error.")
+		if enable_warning_lab4b {
+			// TODO: I think this should be OK, but I did not check it carefully.
+			fmt.Println("Server", kv.gid, "-", kv.me, "Warning: StartOpRaft() times out. ")
+		}
 	}
 	return
 }
@@ -913,15 +922,30 @@ func (kv *ShardKV) MainLoop() {
 					r := bytes.NewBuffer(upperData)
 					d := labgob.NewDecoder(r)
 
-					if d.Decode(&kv.database) != nil ||
-						d.Decode(&kv.hasSeenFirstConfig) != nil ||
-						d.Decode(&kv.responsibleShards) != nil ||
-						d.Decode(&kv.mostRecentWrite) != nil {
+					var database	[shardmaster.NShards]map[string] string
+					var hasSeenFirstConfig [shardmaster.NShards]bool
+					var responsibleShards [shardmaster.NShards] bool
+					var mostRecentWrite map[ClientIndexType] RequestIndexType
+
+
+					if d.Decode(&database) != nil ||
+						d.Decode(&hasSeenFirstConfig) != nil ||
+						d.Decode(&responsibleShards) != nil ||
+						d.Decode(&mostRecentWrite) != nil {
 						fmt.Println("Decode Snapshot fails.")
 						//Success = false
 
 					} else {
 						//Success = true
+
+						for k:=0; k<shardmaster.NShards; k++ {
+							copyMapTo(&database[k], &kv.database[k])
+							kv.hasSeenFirstConfig[k] = hasSeenFirstConfig[k]
+							kv.responsibleShards[k] = responsibleShards[k]
+						}
+						copyMapTo2(&mostRecentWrite, & kv.mostRecentWrite)
+
+
 						if enable_debug_lab4b {
 							fmt.Println("Decoded Database:", kv.database, "\n")
 						}
@@ -929,9 +953,9 @@ func (kv *ShardKV) MainLoop() {
 						for k :=0; k < shardmaster.NShards; k++ {
 							if kv.database[k]!=nil && !kv.responsibleShards[k] {
 								// This does not hold wiredly:
-								//if len(kv.database[k])>0 {
-								//	fmt.Println("Server",kv.gid,"-",kv.me, "Error: database does not match with the responsibleShards")
-								//}
+								if len(kv.database[k])>0 {
+									fmt.Println("Server",kv.gid,"-",kv.me, "Error: database does not match with the responsibleShards")
+								}
 								kv.database[k] = nil
 							}
 						}
