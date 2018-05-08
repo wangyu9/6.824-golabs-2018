@@ -72,7 +72,7 @@ type ShardKV struct {
 	pendingOps	map[int] chan interface{}
 	mostRecentWrite map[ClientIndexType] RequestIndexType
 
-	hasSeenFirstConfig bool
+	hasSeenFirstConfig [shardmaster.NShards]bool
 
 	config shardmaster.Config
 
@@ -145,6 +145,7 @@ func (kv *ShardKV) ShardDetachHandler (op * Op) (interface{}) {
 
 		args.ClientID = makeShardClientID( args.ShardID)
 		args.RequestID = makeShardRequestID( op.ArgsShardDetach.ConfigNum, true)
+		args.IsInit = false
 
 
 		copyMapTo(&reply.ShardDatabase, &args.ShardDatabase)
@@ -172,14 +173,19 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 
 	// TODO: Attach the shard.
 
+
 	args := op.ArgsShardAttach
+
+	if op.ArgsShardAttach.IsInit {
+		kv.hasSeenFirstConfig[args.ShardID] = true
+	}
 
 	if kv.responsibleShards[args.ShardID]==false {
 		kv.responsibleShards[args.ShardID] = true
 		kv.database[args.ShardID] = make(map[string] string)
 		copyMapTo(&args.ShardDatabase, &kv.database[args.ShardID])
 		if enable_debug_lab4b {
-			fmt.Println("Server", kv.gid, "-", kv.me, "ShardAttachHandler() attach, shardID", args.ShardID, " map=", args.ShardDatabase)
+			fmt.Println("Server", kv.gid, "-", kv.me, "ShardAttachHandler() attach successfully, shardID", args.ShardID, " map=", args.ShardDatabase)
 			fmt.Println("table: ", kv.responsibleShards)
 		}
 
@@ -199,7 +205,7 @@ func (kv *ShardKV) ShardAttachHandler (op * Op) (interface{}) {
 		}
 
 	} else {
-		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails.")
+		fmt.Println("Server",kv.gid,"-",kv.me,"Fattal Error: ShardAttachHandler(): this should not happen, probably duplication detection fails. Op:", op)
 		fmt.Println("Server",kv.gid,"-",kv.me,"shardID", args.ShardID, "table: ", kv.responsibleShards)
 	}
 
@@ -324,6 +330,7 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 
 	op.ClientID = args.ClientID
 	op.RequestID = args.RequestID
+	op.ArgsShardAttach.IsInit = args.IsInit
 
 	wrongLeader, err, r := kv.StartOpRaft(op)
 
@@ -413,7 +420,7 @@ func makeShardRequestID(configNum int, isAttach bool) (RequestIndexType) {
 	return r
 }
 
-func (kv *ShardKV) InitShard(shardID int, configNum int) {
+func (kv *ShardKV) InitShard(shardID int, configNum int)(success bool) {
 	if enable_debug_lab4b {
 		fmt.Println("Server", kv.gid, "-", kv.me, "InitShard(", shardID, ") called by server", kv.me)
 	}
@@ -422,6 +429,7 @@ func (kv *ShardKV) InitShard(shardID int, configNum int) {
 
 	op.ClientID = makeShardClientID( shardID)
 	op.RequestID = makeShardRequestID( configNum, true)
+
 	/*
 	kv.mu.Lock()
 	op.ClientID = kv.clientID
@@ -430,13 +438,19 @@ func (kv *ShardKV) InitShard(shardID int, configNum int) {
 	kv.mu.Unlock()
 	*/
 	op.ArgsShardAttach.ShardID = shardID
+	op.ArgsShardAttach.IsInit = true
 	// op.ArgsShardAttach.ShardDatabase // empty map
 
 	// TODO: put this in a loop to make sure it is really initialized.
 
-	// wrongLeader, err, r := kv.StartOpRaft(op)
-	kv.StartOpRaft(op)
+	wrongLeader, err, _ := kv.StartOpRaft(op)
+	//kv.StartOpRaft(op)
 
+	if wrongLeader || err!=OK {
+		return false
+	} else {
+		return true
+	}
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -597,7 +611,7 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 
 	case <- time.After( 4000*time.Millisecond):
 		err = ErrStartOpRaftTimesOut
-		fmt.Println("Server",kv.gid,"-",kv.me,"Warning: StartOpRaft() times out.")
+		fmt.Println("Server",kv.gid,"-",kv.me,"Warning: StartOpRaft() times out. Potential Critical Error.")
 	}
 	return
 }
@@ -749,10 +763,9 @@ func (kv *ShardKV) encodeDatabase() (upperData []byte) {
 	}
 
 	e.Encode(kv.database)
+	e.Encode(kv.hasSeenFirstConfig)
 	e.Encode(kv.responsibleShards)
 	e.Encode(kv.mostRecentWrite)
-
-	// kv.hasSeenFirstConfig // this should not be encoded into.
 
 	upperData = w.Bytes()
 
@@ -808,6 +821,7 @@ func (kv *ShardKV) MainLoop() {
 					d := labgob.NewDecoder(r)
 
 					if d.Decode(&kv.database) != nil ||
+						d.Decode(&kv.hasSeenFirstConfig) != nil ||
 						d.Decode(&kv.responsibleShards) != nil ||
 						d.Decode(&kv.mostRecentWrite) != nil {
 						fmt.Println("Decode Snapshot fails.")
@@ -819,7 +833,9 @@ func (kv *ShardKV) MainLoop() {
 						}
 					}
 
-					kv.hasSeenFirstConfig = true // do not need to initialize shards if started from Snapshot.
+					//for i:=0; i<shardmaster.NShards; i++ {
+					//	kv.hasSeenFirstConfig[i] = true // do not need to initialize shards if started from Snapshot.
+					//}
 
 					kv.mu.Unlock()
 				}
@@ -862,68 +878,92 @@ func (kv *ShardKV) PoolLoop() {
 		//if true {
 			// replica groups consult the master in order to find out what shards to serve
 			// particularly, I made the leader responsible for consulting the master.
-			newConfig := kv.mck.Query(-1)
-
-			kv.mu.Lock()
-
-			shouldInitShards := false
-			// For it to have seen the first config
-			if !kv.hasSeenFirstConfig {
-				if newConfig.Num >1 {
-					newConfig = kv.mck.Query(1)
-					kv.hasSeenFirstConfig = true
-					shouldInitShards = true
-				} else if newConfig.Num == 1 {
-					kv.hasSeenFirstConfig = true
-					shouldInitShards = true
-				} else {
-					// Do nothing.
-				}
-			}
-
-			// The replica group currently holding a shard is responsible for initializing the transfer to the new host replica group.
-
-
-			oldShards := kv.config.Shards
-			newShards := newConfig.Shards
 
 			if enable_debug_lab4b {
-				fmt.Println("Server", kv.gid, "-", kv.me, "PoolLoop() kv.responsibleShards:", kv.responsibleShards, "NewShards:", newShards, "kv.gid:", kv.gid)
+				fmt.Println("Server", kv.gid, "-", kv.me, "Pre Query()")
 			}
 
-			// But if there was no current replica group, the server is responsible for the initialization.
-			if shouldInitShards {
-				for i := 0; i < len(newShards); i++ {
-					if newShards[i] == kv.gid { // !kv.responsibleShards[i] &&  TODO: this is not reliable, if the first config is missed; should be put in init function.
-						// This should be updated in handlers, not here: kv.responsibleShards[i] = true
-						kv.mu.Unlock()
-						kv.InitShard(i, newConfig.Num)
-						kv.mu.Lock()
-					}
+			newConfig := kv.mck.Query(-1)
+
+			if newConfig.Num > 0 {
+
+				if enable_debug_lab4b {
+					fmt.Println("Server", kv.gid, "-", kv.me, "Post Query()")
 				}
-			} else {
-				for i := 0; i < len(oldShards); i++ {
-					// kv.responsibleShards[i]  : this reads from kv.responsibleShards, probably not safe without.
-					// if oldShards[i] == kv.gid && newShards[i] != kv.gid { // Critical: this is wrong, since oldShards[i] is out of date, and the server may miss the info,
-					// blocking to try ShardDetachAndSend
-					if kv.responsibleShards[i] && newShards[i] != kv.gid {
-						// detach and move the shard to the new replica group.
-						// This should be updated in handlers, not here: kv.responsibleShards[i] = false
-						kv.mu.Unlock()
-						groupToSend := newConfig.Groups[newShards[i]]
-						if len(groupToSend) > 0 {
-							// TODO optional optimize: read from local kv.responsibleShards before insert to raft.
-							kv.ShardDetachAndSend(i, groupToSend, newConfig.Num)
+
+				kv.mu.Lock()
+
+				firstConfig := kv.mck.Query(1)
+
+				var shouldInitShards [shardmaster.NShards]bool
+				// shouldInitShards := false
+				// For it to have seen the first config
+				for i := 0; i < shardmaster.NShards; i++ {
+					if !kv.hasSeenFirstConfig[i] && firstConfig.Shards[i] == kv.gid {
+						if newConfig.Num > 1 {
+							newConfig = kv.mck.Query(1)
+							// kv.hasSeenFirstConfig[i] = true
+							shouldInitShards[i] = true
+						} else if newConfig.Num == 1 {
+							// kv.hasSeenFirstConfig[i] = true
+							shouldInitShards[i] = true
 						} else {
-							fmt.Println("Server",kv.gid,"-",kv.me,"Warning: groupToSend is empty, this should be impossible")
+							// Do nothing.
 						}
-						kv.mu.Lock()
 					}
 				}
-			}
 
-			kv.config = newConfig
-			kv.mu.Unlock()
+				// The replica group currently holding a shard is responsible for initializing the transfer to the new host replica group.
+
+				//oldShards := kv.config.Shards
+				newShards := newConfig.Shards
+
+				if enable_debug_lab4b {
+					fmt.Println("Server", kv.gid, "-", kv.me, "PoolLoop() kv.responsibleShards:", kv.responsibleShards, "NewShards:", newShards, "kv.gid:", kv.gid)
+				}
+
+				for i := 0; i < shardmaster.NShards; i++ {
+
+					// But if there was no current replica group, the server is responsible for the initialization.
+					if shouldInitShards[i] {
+						//for i := 0; i < len(newShards); i++ {
+						//if newShards[i] == kv.gid // moved this up
+						{ // !kv.responsibleShards[i] &&  TODO: this is not reliable, if the first config is missed; should be put in init function.
+							// This should be updated in handlers, not here: kv.responsibleShards[i] = true
+							kv.mu.Unlock()
+							//succeed := kv.InitShard(i, newConfig.Num)
+							kv.InitShard(i, newConfig.Num)
+							kv.mu.Lock()
+							//if succeed {
+							//	kv.hasSeenFirstConfig[i] = true
+							//}
+						}
+						//}
+					} else {
+						//for i := 0; i < len(oldShards); i++ {
+						// kv.responsibleShards[i]  : this reads from kv.responsibleShards, probably not safe without.
+						// if oldShards[i] == kv.gid && newShards[i] != kv.gid { // Critical: this is wrong, since oldShards[i] is out of date, and the server may miss the info,
+						// blocking to try ShardDetachAndSend
+						if kv.responsibleShards[i] && newShards[i] != kv.gid {
+							// detach and move the shard to the new replica group.
+							// This should be updated in handlers, not here: kv.responsibleShards[i] = false
+							kv.mu.Unlock()
+							groupToSend := newConfig.Groups[newShards[i]]
+							if len(groupToSend) > 0 {
+								// TODO optional optimize: read from local kv.responsibleShards before insert to raft.
+								kv.ShardDetachAndSend(i, groupToSend, newConfig.Num)
+							} else {
+								fmt.Println("Server", kv.gid, "-", kv.me, "Warning: groupToSend is empty, this should be impossible")
+							}
+							kv.mu.Lock()
+						}
+						//}
+					}
+				}
+				kv.config = newConfig
+				kv.mu.Unlock()
+
+			}
 
 		}
 
@@ -990,10 +1030,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// kv.responsibleShards // probably not necessary to initialize a fixed size array.
 	for i:=0; i<shardmaster.NShards; i++ {
 		kv.responsibleShards[i] = false
+		kv.hasSeenFirstConfig[i] = false
 	}
 	kv.pendingOps = make(map[int] chan interface{})
 	kv.mostRecentWrite = make(map[ClientIndexType] RequestIndexType)
-	// TODO: read these info from persister()
+	// These info will be read and overwitten from persister() latter in MainLoop.
 
 	// Given Code:
 	kv.applyCh = make(chan raft.ApplyMsg)

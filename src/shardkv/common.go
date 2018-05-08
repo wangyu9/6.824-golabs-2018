@@ -80,6 +80,8 @@ type ShardAttachArgs struct {
 	ClientID	ClientIndexType
 	RequestID	RequestIndexType
 
+	IsInit		bool
+
 }
 
 type ShardAttachReply struct {
