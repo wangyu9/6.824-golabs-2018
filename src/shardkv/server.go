@@ -369,6 +369,8 @@ func (kv *ShardKV) ShardAttach (args *ShardAttachArgs, reply *ShardAttachReply) 
 
 	op.ClientID = args.ClientID
 	op.RequestID = args.RequestID
+	op.ArgsShardAttach.ClientID = args.ClientID
+	op.ArgsShardAttach.RequestID = args.RequestID
 	op.ArgsShardAttach.IsInit = args.IsInit
 
 	wrongLeader, err, r := kv.StartOpRaft(op)
@@ -1013,8 +1015,9 @@ func (kv *ShardKV) PoolLoop() {
 			}
 
 			newConfig := kv.mck.Query(-1)
+			firstConfig := kv.mck.Query(1)
 
-			if newConfig.Num > 0 {
+			if newConfig.Num > 0 && firstConfig.Num == 1 {
 
 				if enable_debug_lab4b {
 					fmt.Println("Server", kv.gid, "-", kv.me, "Post Query()")
@@ -1022,15 +1025,13 @@ func (kv *ShardKV) PoolLoop() {
 
 				kv.mu.Lock()
 
-				firstConfig := kv.mck.Query(1)
-
 				var shouldInitShards [shardmaster.NShards]bool
 				// shouldInitShards := false
 				// For it to have seen the first config
 				for i := 0; i < shardmaster.NShards; i++ {
-					if !kv.hasSeenFirstConfig[i] && firstConfig.Shards[i] == kv.gid {
+					if !kv.hasSeenFirstConfig[i] && (firstConfig.Shards[i] == kv.gid) {
 						if newConfig.Num > 1 {
-							newConfig = kv.mck.Query(1)
+							newConfig = firstConfig
 							// kv.hasSeenFirstConfig[i] = true
 							shouldInitShards[i] = true
 						} else if newConfig.Num == 1 {
@@ -1038,7 +1039,10 @@ func (kv *ShardKV) PoolLoop() {
 							shouldInitShards[i] = true
 						} else {
 							// Do nothing.
+							shouldInitShards[i] = false
 						}
+					} else {
+						shouldInitShards[i] = false
 					}
 				}
 
@@ -1061,7 +1065,8 @@ func (kv *ShardKV) PoolLoop() {
 							// This should be updated in handlers, not here: kv.responsibleShards[i] = true
 							kv.mu.Unlock()
 							//succeed := kv.InitShard(i, newConfig.Num)
-							kv.InitShard(i, newConfig.Num)
+							fmt.Println("Server", kv.gid, "-", kv.me, "firstConfig:", firstConfig)
+							kv.InitShard(i, firstConfig.Num)
 							kv.mu.Lock()
 							//if succeed {
 							//	kv.hasSeenFirstConfig[i] = true

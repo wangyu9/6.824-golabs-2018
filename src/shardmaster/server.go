@@ -133,6 +133,17 @@ func copyNShardsTo (origin* [NShards] int, target* [NShards] int) {
 	return
 }
 
+
+func copyConfigTo (origin* Config, target* Config) {
+
+	target.Num = origin.Num
+	copyNShardsTo(&origin.Shards, &target.Shards)
+	copyMapTo(&origin.Groups, &target.Groups)
+
+	return
+}
+
+/*
 func copyConfig (config* Config) (copied Config) {
 
 	copied = Config{}
@@ -146,7 +157,7 @@ func copyConfig (config* Config) (copied Config) {
 
 	return
 }
-
+*/
 
 // An important rule for the Rebalance is that the result should be identical whenever executed, and on whichever machine.
 
@@ -183,6 +194,9 @@ func max(a, b int) int {
 
 // This one does not pass, max-min can be 2 or larger.
 func (config *Config) JoinRebalance(newJoinID int) {
+
+	fmt.Println("TODO!!!!!!!!!!!!!!!!")
+	fmt.Println("Critical error, the results are difference are shardmasters, figure out the reason if want to use this one!!")
 
 	gids := make([] int, len(config.Groups))
 	i := 0
@@ -312,6 +326,9 @@ func (config *Config) JoinRebalance(newJoinID int) {
 }
 
 func (config *Config) LeaveRebalance(newLeaveID int) {
+	fmt.Println("TODO!!!!!!!!!!!!!!!!")
+	fmt.Println("Critical error, the results are difference are shardmasters, figure out the reason if want to use this one!!")
+
 	gids := make([] int, len(config.Groups))
 	i := 0
 	for key, _ := range config.Groups {
@@ -641,21 +658,23 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 	newServers := op.ArgsJoin.Servers
 
 	if enable_debug_lab4a {
-		fmt.Println("Servers joined", newServers)
+		fmt.Println("Shardmaster", sm.me,"Servers joined", op)
 	}
 	//fmt.Println("Servers joined2", copyMap(newServers))
 
-	newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	// newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	newConfig := Config{}
+	copyConfigTo(&sm.configs[sm.currentConfigNum], &newConfig)
 
 	for gid, servers := range newServers {
 		_, exists := newConfig.Groups[gid]
 		if exists {
-			fmt.Println("Warning: JoinHandler(): GID=",gid,"already exists")
+			fmt.Println("Shardmaster", sm.me,"Warning: JoinHandler(): GID=",gid,"already exists")
 		} else {
 			//fmt.Println("JoinHandler(): GID=", gid,"added")
 			newConfig.Groups[gid] = servers
-			//newConfig.Rebalance()
-			newConfig.JoinRebalance(gid)
+			newConfig.Rebalance()
+			//newConfig.JoinRebalance(gid)
 		}
 	}
 
@@ -669,7 +688,12 @@ func (sm *ShardMaster) JoinHandler (op *Op) (interface{}) {
 
 	sm.configs = append(sm.configs, newConfig)
 
-	// fmt.Println("Configs:",sm.configs)
+	if enable_debug_lab4a {
+		fmt.Println("Configs:", sm.configs)
+	}
+	if newConfig.Num != len(sm.configs)-1 {
+		fmt.Println("Shardmaster", sm.me, "JoinHandler() Error: len does not match:", sm.configs)
+	}
 
 	return ""
 }
@@ -687,20 +711,21 @@ func (sm *ShardMaster) LeaveHandler (op *Op) (interface{}) {
 	GIDs := op.ArgsLeave.GIDs
 
 	if enable_debug_lab4a {
-		fmt.Println("GIDs leaves", GIDs)
+		fmt.Println("Shardmaster", sm.me,"GIDs leaves", op)
 	}
 
-	newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
-
+	// newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	newConfig := Config{}
+	copyConfigTo(&sm.configs[sm.currentConfigNum], &newConfig)
 
 	for _, gid := range GIDs {
 		_, exists := newConfig.Groups[gid]
 		if exists {
 			delete(newConfig.Groups, gid)
-			//newConfig.Rebalance()
-			newConfig.LeaveRebalance(gid)
+			newConfig.Rebalance()
+			//newConfig.LeaveRebalance(gid)
 		} else {
-			fmt.Println("Error: LeaveHandler(): GID=",gid,"does not exist")
+			fmt.Println("Shardmaster", sm.me,"Error: LeaveHandler(): GID=",gid,"does not exist")
 		}
 	}
 
@@ -713,6 +738,13 @@ func (sm *ShardMaster) LeaveHandler (op *Op) (interface{}) {
 	newConfig.Num = sm.currentConfigNum
 
 	sm.configs = append(sm.configs, newConfig)
+
+	if enable_debug_lab4a {
+		fmt.Println("Configs:", sm.configs)
+	}
+	if newConfig.Num != len(sm.configs)-1 {
+		fmt.Println("Shardmaster", sm.me, "LeaveHandler() Error: len does not match:", sm.configs)
+	}
 
 	return ""
 }
@@ -730,7 +762,7 @@ func (sm *ShardMaster) QueryHandler (op *Op) (interface{}) {
 	Num := op.ArgsQuery.Num
 
 	if enable_debug_lab4a {
-		fmt.Println("GIDs Query", Num)
+		fmt.Println("Shardmaster", sm.me, "GIDs Query", op)
 	}
 
 	//  If the number is -1 or bigger than the biggest known configuration number,
@@ -740,11 +772,17 @@ func (sm *ShardMaster) QueryHandler (op *Op) (interface{}) {
 	}
 
 	if Num>sm.currentConfigNum{
-		fmt.Println("Warning: Query Config", Num, "is larger than currentConfigNum", sm.currentConfigNum)
+		fmt.Println("Shardmaster", sm.me, "Warning: Query Config", Num, "is larger than currentConfigNum", sm.currentConfigNum)
 		Num = sm.currentConfigNum
 	}
 
-	return copyConfig(&sm.configs[Num])
+	if enable_debug_lab4a {
+		fmt.Println("Configs:", sm.configs)
+	}
+	// return copyConfig(&sm.configs[Num])
+	replyConfig := Config{}
+	copyConfigTo(&sm.configs[Num], &replyConfig)
+	return replyConfig
 }
 
 func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
@@ -762,10 +800,12 @@ func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
 	ShardID := op.ArgsMove.Shard
 
 	if enable_debug_lab4a {
-		fmt.Println("Move GID=", GID, ", Shard=", ShardID)
+		fmt.Println("Shardmaster", sm.me, "Move", op)
 	}
 
-	newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	//newConfig := copyConfig(&sm.configs[sm.currentConfigNum])// copy, not references!!
+	newConfig := Config{}
+	copyConfigTo(&sm.configs[sm.currentConfigNum], &newConfig)
 
 	// config.Rebalance() // do not do rebalance
 	newConfig.Shards[ShardID] = GID
@@ -775,6 +815,13 @@ func (sm *ShardMaster) MoveHandler (op *Op) (interface{}) {
 	newConfig.Num = sm.currentConfigNum
 
 	sm.configs = append(sm.configs, newConfig)
+
+	if enable_debug_lab4a {
+		fmt.Println("Configs:", sm.configs)
+	}
+	if newConfig.Num != len(sm.configs)-1 {
+		fmt.Println("Shardmaster", sm.me, "MoveHandler() Error: len does not match:", sm.configs)
+	}
 
 	return ""
 }
@@ -873,7 +920,7 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 			fmt.Println("Does this ever happen?")
 		}
 
-	case <- time.After( 4000*time.Millisecond):
+	case <- time.After( 800*time.Millisecond):
 		err = "StartOpRaftTimesOut"
 		fmt.Println("Warning: StartOpRaft() times out.")
 	}
@@ -903,17 +950,20 @@ func (sm *ShardMaster) tryApplyOp(op *Op) (r interface{}) {
 		switch op.Type {
 		case OP_TYPE_JOIN:
 			r = sm.JoinHandler(op)
+			// update the table
+			sm.mostRecentWrite[clientID] = requestID
 		case OP_TYPE_LEAVE:
 			r = sm.LeaveHandler(op)
+			// update the table
+			sm.mostRecentWrite[clientID] = requestID
 		case OP_TYPE_MOVE:
 			r = sm.MoveHandler(op)
+			// update the table
+			sm.mostRecentWrite[clientID] = requestID
 		case OP_TYPE_QUERY:
 			r = sm.QueryHandler(op)
+			// Do not update for read
 		}
-		// update the table
-		sm.mostRecentWrite[clientID] = requestID
-
-
 	} else {
 		// the op is duplicated, but still reply ok
 		//if debug_getputappend {
@@ -922,8 +972,11 @@ func (sm *ShardMaster) tryApplyOp(op *Op) (r interface{}) {
 
 		switch op.Type {
 		case OP_TYPE_JOIN:
+			r = JoinReply{WrongLeader: false, Err: OK}
 		case OP_TYPE_LEAVE:
+			r = LeaveReply{WrongLeader: false, Err: OK}
 		case OP_TYPE_MOVE:
+			r = MoveReply{WrongLeader: false, Err: OK}
 		case OP_TYPE_QUERY:
 			r = sm.QueryHandler(op)
 		}
@@ -1005,7 +1058,8 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	if !wrongLeader && err==OK {
 		//*reply = r.(QueryReply)
 		config := r.(Config)
-		reply.Config = copyConfig(&config)
+		//reply.Config = copyConfig(&config)
+		copyConfigTo(&config, &reply.Config)
 	}
 
 	reply.WrongLeader = wrongLeader
@@ -1061,6 +1115,10 @@ func (sm *ShardMaster) MainLoop() {
 func (sm *ShardMaster) Kill() {
 	sm.rf.Kill()
 	// Your code here, if desired.
+
+	if enable_debug_lab4a {
+		fmt.Println("ShardMaster", sm.me, "Kill()")
+	}
 }
 
 // needed by shardkv tester
@@ -1098,7 +1156,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	go sm.MainLoop()
 
-
+	if enable_debug_lab4a {
+		fmt.Println("ShardMaster", sm.me, "StartServer()")
+	}
 
 	return sm
 }
