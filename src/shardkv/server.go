@@ -683,17 +683,16 @@ func (kv *ShardKV) StartOpRaft(op Op) (wrongLeader bool, err Err, reply interfac
 
 		} else {
 			wrongLeader = true
-			if enable_warning_lab4b {
-				// TODO: this might be OK, but I did not check it carefully.
+			if enable_debug_lab4b {
+				// I think this should be OK. The client will retry, but the duplication detection will do its job.
 				fmt.Println("Server", kv.gid, "-", kv.me, "Does this ever happen?")
 			}
 		}
 
 	case <- time.After( 600*time.Millisecond):
 		err = ErrStartOpRaftTimesOut
-		// if enable_warning_lab4b
-		{
-			// TODO: I think this should be OK, but I did not check it carefully.
+		if enable_debug_lab4b {
+			// I think this should be OK. The client will retry, but the duplication detection will do its job.
 			fmt.Println("Server", kv.gid, "-", kv.me, "Warning: StartOpRaft() times out. ")
 		}
 	}
@@ -1065,7 +1064,9 @@ func (kv *ShardKV) PoolLoop() {
 							// This should be updated in handlers, not here: kv.responsibleShards[i] = true
 							kv.mu.Unlock()
 							//succeed := kv.InitShard(i, newConfig.Num)
-							fmt.Println("Server", kv.gid, "-", kv.me, "firstConfig:", firstConfig)
+							if enable_debug_lab4b {
+								fmt.Println("Server", kv.gid, "-", kv.me, "firstConfig:", firstConfig)
+							}
 							kv.InitShard(i, firstConfig.Num)
 							kv.mu.Lock()
 							//if succeed {

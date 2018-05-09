@@ -917,12 +917,18 @@ func (sm *ShardMaster) StartOpRaft(op Op, opHandler fn) (wrongLeader bool, err E
 
 		} else {
 			wrongLeader = true
-			fmt.Println("Does this ever happen?")
+			if enable_debug_lab4a {
+				// I think this should be OK. The client will retry, but the duplication detection will do its job.
+				fmt.Println("Does this ever happen?")
+			}
 		}
 
 	case <- time.After( 800*time.Millisecond):
 		err = "StartOpRaftTimesOut"
-		fmt.Println("Warning: StartOpRaft() times out.")
+		if enable_debug_lab4a {
+			// I think this should be OK. The client will retry, but the duplication detection will do its job.
+			fmt.Println("Warning: StartOpRaft() times out.")
+		}
 	}
 	return
 }
