@@ -1,6 +1,11 @@
 # 6.824-golabs-2018
 
-This is the private repo of Yu Wang (wangyu9@mit.edu)
+This repo is the semester-long project of Yu Wang for the graduate level course 6.824 Distributed Systems Engineering 
+(http://nil.csail.mit.edu/6.824/2018/) done in Spring 2018. 
+
+# 
+
+This is the work of Yu Wang (wangyu9@mit.edu)
 
 imported from git://g.csail.mit.edu/6.824-golabs-2018
 
