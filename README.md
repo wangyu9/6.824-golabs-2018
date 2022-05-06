@@ -3,6 +3,8 @@
 This repo is the semester-long project of Yu Wang for the graduate level course 6.824 Distributed Systems Engineering 
 (http://nil.csail.mit.edu/6.824/2018/) done in Spring 2018. 
 
+The code here passed all labs without any error, includeing all challenge tests for extra credits. 
+
 # Sync with instructor code
 
 The code was imported from git://g.csail.mit.edu/6.824-golabs-2018
